@@ -32,7 +32,7 @@ def main() -> int:
     last = None
     if paths.master_log.exists():
         last = parse_master_log(paths.master_log.read_text(errors="replace"))
-    w = MainWindow(inventory=inv, last_run=last)
+    w = MainWindow(inventory=inv, last_run=last, reload_inventory=load_inventory)
     if err:
         w.show_error(err)
     w.show()

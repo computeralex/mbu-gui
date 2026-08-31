@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -20,11 +21,17 @@ from mbu_gui.disks import Inventory
 from mbu_gui.helper_client import explain_helper_failure, pkexec_argv, which_helper
 from mbu_gui.logs import LastRun, current_file_from_line, last_run_label
 from mbu_gui.process import LineProcess
+from mbu_gui.setup_page import SetupPage
 
 UNPLUG_BANNER_TEXT = (
     "Unplug the backup disk now.\n"
     "Duplicate UUIDs confuse Linux if you leave it plugged in."
 )
+
+PAGE_HOME = 0
+PAGE_SETUP = 1
+PAGE_FORMAT = 2
+PAGE_BROWSE = 3
 
 
 def _icon_path() -> Path | None:
@@ -48,6 +55,7 @@ class MainWindow(QMainWindow):
         pkexec_exists: bool = True,
         start_process: Callable[[list[str]], None] | None = None,
         helper_path: Path | None = None,
+        reload_inventory: Callable[[], Inventory] | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -57,8 +65,10 @@ class MainWindow(QMainWindow):
         self.pkexec_exists = pkexec_exists
         self.start_process = start_process
         self.helper_path = helper_path
+        self.reload_inventory = reload_inventory
         self._running = False
         self._helper_output: list[str] = []
+        self._helper_kind = "backup"
         self._line_process: LineProcess | None = None
 
         self.setWindowTitle("MBU Backup")
@@ -66,8 +76,9 @@ class MainWindow(QMainWindow):
         if icon is not None:
             self.setWindowIcon(QIcon(str(icon)))
 
-        central = QWidget(self)
-        layout = QVBoxLayout(central)
+        self.homePage = QWidget()
+        self.homePage.setObjectName("homePage")
+        layout = QVBoxLayout(self.homePage)
 
         title = QLabel("MBU Backup")
         title_font = QFont(title.font())
@@ -103,6 +114,7 @@ class MainWindow(QMainWindow):
         secondary = QHBoxLayout()
         self.setupButton = QPushButton("Set up this computer")
         self.setupButton.setObjectName("setupButton")
+        self.setupButton.clicked.connect(self.on_setup_clicked)
         self.formatButton = QPushButton("Prepare a backup disk")
         self.formatButton.setObjectName("formatButton")
         self.browseButton = QPushButton("Browse a backup")
@@ -134,8 +146,52 @@ class MainWindow(QMainWindow):
         self.unplugBanner.hide()
         layout.addWidget(self.unplugBanner)
 
-        self.setCentralWidget(central)
+        self.setupPage = SetupPage(inventory)
+        self.setupPage.setObjectName("setupPage")
+        self._wire_setup_page()
+
+        self.formatPage = QWidget()
+        self.formatPage.setObjectName("formatPage")
+        self.browsePage = QWidget()
+        self.browsePage.setObjectName("browsePage")
+
+        self.stack = QStackedWidget()
+        self.stack.setObjectName("stack")
+        self.stack.addWidget(self.homePage)
+        self.stack.addWidget(self.setupPage)
+        self.stack.addWidget(self.formatPage)
+        self.stack.addWidget(self.browsePage)
+
+        self.setCentralWidget(self.stack)
         self.resize(720, 560)
+
+    def _wire_setup_page(self) -> None:
+        self.setupPage.applyButton.clicked.connect(self.on_setup_apply)
+        self.setupPage.leaveButton.clicked.connect(self.on_setup_leave)
+
+    def _replace_setup_page(self, inventory: Inventory) -> None:
+        old = self.setupPage
+        page_index = self.stack.indexOf(old)
+        current = self.stack.currentIndex()
+        self.setupPage = SetupPage(inventory)
+        self.setupPage.setObjectName("setupPage")
+        self._wire_setup_page()
+        if page_index < 0:
+            self.stack.insertWidget(PAGE_SETUP, self.setupPage)
+        else:
+            self.stack.insertWidget(page_index, self.setupPage)
+            self.stack.removeWidget(old)
+        old.deleteLater()
+        if current == PAGE_SETUP:
+            self.stack.setCurrentIndex(PAGE_SETUP)
+
+    def _apply_inventory(self, inventory: Inventory) -> None:
+        self.inventory = inventory
+        self.statusLabel.setText(inventory.status_line)
+        self.startReasonLabel.setText(inventory.start_blocked_reason or "")
+        if not self._running:
+            self.startButton.setEnabled(inventory.start_blocked_reason is None)
+        self._replace_setup_page(inventory)
 
     def show_unplug(self, visible: bool) -> None:
         self.unplugBanner.setVisible(visible)
@@ -159,8 +215,12 @@ class MainWindow(QMainWindow):
         self.browseButton.setEnabled(idle)
         if running:
             self.startButton.setEnabled(False)
+            self.setupPage.applyButton.setEnabled(False)
+            self.setupPage.leaveButton.setEnabled(False)
         else:
             self.startButton.setEnabled(self.inventory.start_blocked_reason is None)
+            self.setupPage.leaveButton.setEnabled(True)
+            self.setupPage._sync_enabled()
 
     def on_start_clicked(self) -> None:
         if self.inventory.start_blocked_reason or self._running:
@@ -169,6 +229,19 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._run_backup_with_fselection(dialog.fselection())
+
+    def on_setup_clicked(self) -> None:
+        if self._running:
+            return
+        self.stack.setCurrentIndex(PAGE_SETUP)
+
+    def on_setup_leave(self) -> None:
+        self.stack.setCurrentIndex(PAGE_HOME)
+
+    def on_setup_apply(self) -> None:
+        if self._running or not self.setupPage._can_apply():
+            return
+        self._run_label_live(self.setupPage.labels_arg())
 
     def _run_backup_with_fselection(self, fselection: str) -> None:
         if self._running:
@@ -187,7 +260,37 @@ class MainWindow(QMainWindow):
             return
         argv = pkexec_argv(helper, ["backup", "--fselection", fselection])
         self._helper_output = []
+        self._helper_kind = "backup"
         self.show_unplug(False)
+        self.set_running(True)
+        if self.start_process is not None:
+            self.start_process(argv)
+            return
+        proc = LineProcess(self)
+        self._line_process = proc
+        proc.line.connect(self._on_helper_line)
+        proc.finished.connect(self._on_process_finished)
+        proc.start(argv)
+
+    def _run_label_live(self, labels: str) -> None:
+        if self._running:
+            return
+        helper = self.helper_path if self.helper_path is not None else which_helper()
+        helper_ok = self.helper_exists and helper is not None
+        if helper is None or not helper_ok or not self.pkexec_exists:
+            self.show_error(
+                explain_helper_failure(
+                    127,
+                    "",
+                    helper_exists=helper_ok,
+                    pkexec_exists=self.pkexec_exists,
+                )
+            )
+            self.stack.setCurrentIndex(PAGE_HOME)
+            return
+        argv = pkexec_argv(helper, ["label-live", "--labels", labels])
+        self._helper_output = []
+        self._helper_kind = "label-live"
         self.set_running(True)
         if self.start_process is not None:
             self.start_process(argv)
@@ -203,7 +306,11 @@ class MainWindow(QMainWindow):
         self.append_log(text)
 
     def _on_process_finished(self, code: int) -> None:
-        self.on_helper_finished(code, stderr="\n".join(self._helper_output))
+        stderr = "\n".join(self._helper_output)
+        if self._helper_kind == "label-live":
+            self.on_label_live_finished(code, stderr)
+        else:
+            self.on_helper_finished(code, stderr)
 
     def on_helper_finished(self, code: int, stderr: str = "") -> None:
         if code == 0:
@@ -219,4 +326,25 @@ class MainWindow(QMainWindow):
             )
         )
         self.show_unplug(False)
+        self.set_running(False)
+
+    def on_label_live_finished(self, code: int, stderr: str = "") -> None:
+        if code == 0:
+            if self.reload_inventory is not None:
+                try:
+                    self._apply_inventory(self.reload_inventory())
+                except Exception as e:
+                    self.show_error(str(e))
+            self.stack.setCurrentIndex(PAGE_HOME)
+            self.set_running(False)
+            return
+        self.show_error(
+            explain_helper_failure(
+                code,
+                stderr,
+                helper_exists=self.helper_exists,
+                pkexec_exists=self.pkexec_exists,
+            )
+        )
+        self.stack.setCurrentIndex(PAGE_HOME)
         self.set_running(False)

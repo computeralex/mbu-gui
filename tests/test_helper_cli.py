@@ -89,3 +89,22 @@ def test_label_live_refuses_sdb(tmp_path, capsys):
     )
     assert code == 2
     assert "not on the disk that contains /" in capsys.readouterr().out
+
+
+def test_label_live_sfdisk_argv(tmp_path):
+    captured = []
+    def run(argv, **kwargs):
+        captured.append(argv)
+        return 0
+    inv = _lsblk("lsblk_unnamed.json")
+    # use a live partition name from unnamed fixture, partn 2 if that is /
+    code = main(
+        ["label-live", "--labels", "sda2=main-root"],
+        environ=_env(tmp_path),
+        lsblk_data=inv,
+        run=run,
+    )
+    assert code == 0
+    assert captured[0][0] == "sfdisk"
+    assert "--part-label" in captured[0]
+    assert captured[0] == ["sfdisk", "--part-label", "/dev/sda", "2", "main-root"]
