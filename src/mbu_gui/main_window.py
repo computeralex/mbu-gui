@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
+    QDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -13,8 +15,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from mbu_gui.backup_dialog import BackupDialog
 from mbu_gui.disks import Inventory
+from mbu_gui.helper_client import explain_helper_failure, pkexec_argv, which_helper
 from mbu_gui.logs import LastRun, current_file_from_line, last_run_label
+from mbu_gui.process import LineProcess
 
 UNPLUG_BANNER_TEXT = (
     "Unplug the backup disk now.\n"
@@ -41,6 +46,8 @@ class MainWindow(QMainWindow):
         last_run: LastRun | None,
         helper_exists: bool = True,
         pkexec_exists: bool = True,
+        start_process: Callable[[list[str]], None] | None = None,
+        helper_path: Path | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -48,7 +55,11 @@ class MainWindow(QMainWindow):
         self.last_run = last_run
         self.helper_exists = helper_exists
         self.pkexec_exists = pkexec_exists
+        self.start_process = start_process
+        self.helper_path = helper_path
         self._running = False
+        self._helper_output: list[str] = []
+        self._line_process: LineProcess | None = None
 
         self.setWindowTitle("MBU Backup")
         icon = _icon_path()
@@ -81,6 +92,7 @@ class MainWindow(QMainWindow):
         self.startButton.setFont(start_font)
         self.startButton.setMinimumHeight(48)
         self.startButton.setEnabled(inventory.start_blocked_reason is None)
+        self.startButton.clicked.connect(self.on_start_clicked)
         layout.addWidget(self.startButton)
 
         self.startReasonLabel = QLabel(inventory.start_blocked_reason or "")
@@ -149,3 +161,62 @@ class MainWindow(QMainWindow):
             self.startButton.setEnabled(False)
         else:
             self.startButton.setEnabled(self.inventory.start_blocked_reason is None)
+
+    def on_start_clicked(self) -> None:
+        if self.inventory.start_blocked_reason or self._running:
+            return
+        dialog = BackupDialog(self.inventory, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._run_backup_with_fselection(dialog.fselection())
+
+    def _run_backup_with_fselection(self, fselection: str) -> None:
+        if self._running:
+            return
+        helper = self.helper_path if self.helper_path is not None else which_helper()
+        helper_ok = self.helper_exists and helper is not None
+        if helper is None or not helper_ok or not self.pkexec_exists:
+            self.show_error(
+                explain_helper_failure(
+                    127,
+                    "",
+                    helper_exists=helper_ok,
+                    pkexec_exists=self.pkexec_exists,
+                )
+            )
+            return
+        argv = pkexec_argv(helper, ["backup", "--fselection", fselection])
+        self._helper_output = []
+        self.show_unplug(False)
+        self.set_running(True)
+        if self.start_process is not None:
+            self.start_process(argv)
+            return
+        proc = LineProcess(self)
+        self._line_process = proc
+        proc.line.connect(self._on_helper_line)
+        proc.finished.connect(self._on_process_finished)
+        proc.start(argv)
+
+    def _on_helper_line(self, text: str) -> None:
+        self._helper_output.append(text)
+        self.append_log(text)
+
+    def _on_process_finished(self, code: int) -> None:
+        self.on_helper_finished(code, stderr="\n".join(self._helper_output))
+
+    def on_helper_finished(self, code: int, stderr: str = "") -> None:
+        if code == 0:
+            self.show_unplug(True)
+            self.set_running(False)
+            return
+        self.show_error(
+            explain_helper_failure(
+                code,
+                stderr,
+                helper_exists=self.helper_exists,
+                pkexec_exists=self.pkexec_exists,
+            )
+        )
+        self.show_unplug(False)
+        self.set_running(False)
