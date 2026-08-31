@@ -1,0 +1,163 @@
+{
+  "blockdevices": [
+    {
+      "name": "sda",
+      "path": "/dev/sda",
+      "type": "disk",
+      "size": "256G",
+      "model": "Samsung SSD",
+      "children": [
+        {
+          "name": "sda1",
+          "path": "/dev/sda1",
+          "type": "part",
+          "size": "512M",
+          "fstype": "vfat",
+          "mountpoint": "/boot/efi",
+          "partlabel": "main-efi",
+          "partn": 1,
+          "uuid": "AAAA"
+        },
+        {
+          "name": "sda2",
+          "path": "/dev/sda2",
+          "type": "part",
+          "size": "50G",
+          "fstype": "ext4",
+          "mountpoint": "/",
+          "partlabel": "main-root",
+          "partn": 2,
+          "uuid": "BBBB"
+        },
+        {
+          "name": "sda3",
+          "path": "/dev/sda3",
+          "type": "part",
+          "size": "197G",
+          "fstype": "ext4",
+          "mountpoint": "/home",
+          "partlabel": "main-home",
+          "partn": 3,
+          "uuid": "CCCC"
+        },
+        {
+          "name": "sda4",
+          "path": "/dev/sda4",
+          "type": "part",
+          "size": "8G",
+          "fstype": "swap",
+          "mountpoint": null,
+          "partlabel": "main-swap",
+          "partn": 4,
+          "uuid": "DDDD"
+        }
+      ]
+    },
+    {
+      "name": "sdb",
+      "path": "/dev/sdb",
+      "type": "disk",
+      "size": "500G",
+      "model": "Backup Drive",
+      "children": [
+        {
+          "name": "sdb1",
+          "path": "/dev/sdb1",
+          "type": "part",
+          "size": "512M",
+          "fstype": "vfat",
+          "mountpoint": null,
+          "partlabel": "bak1-efi",
+          "partn": 1,
+          "uuid": "EEEE"
+        },
+        {
+          "name": "sdb2",
+          "path": "/dev/sdb2",
+          "type": "part",
+          "size": "50G",
+          "fstype": "ext4",
+          "mountpoint": null,
+          "partlabel": "bak1-root",
+          "partn": 2,
+          "uuid": "FFFF"
+        },
+        {
+          "name": "sdb3",
+          "path": "/dev/sdb3",
+          "type": "part",
+          "size": "197G",
+          "fstype": "ext4",
+          "mountpoint": null,
+          "partlabel": "bak1-home",
+          "partn": 3,
+          "uuid": "GGGG"
+        },
+        {
+          "name": "sdb4",
+          "path": "/dev/sdb4",
+          "type": "part",
+          "size": "8G",
+          "fstype": "swap",
+          "mountpoint": null,
+          "partlabel": "bak1-swap",
+          "partn": 4,
+          "uuid": "HHHH"
+        }
+      ]
+    },
+    {
+      "name": "sdc",
+      "path": "/dev/sdc",
+      "type": "disk",
+      "size": "1T",
+      "model": "Second Backup",
+      "children": [
+        {
+          "name": "sdc1",
+          "path": "/dev/sdc1",
+          "type": "part",
+          "size": "512M",
+          "fstype": "vfat",
+          "mountpoint": null,
+          "partlabel": "bak2-efi",
+          "partn": 1,
+          "uuid": "IIII"
+        },
+        {
+          "name": "sdc2",
+          "path": "/dev/sdc2",
+          "type": "part",
+          "size": "50G",
+          "fstype": "ext4",
+          "mountpoint": null,
+          "partlabel": "bak2-root",
+          "partn": 2,
+          "uuid": "JJJJ"
+        },
+        {
+          "name": "sdc3",
+          "path": "/dev/sdc3",
+          "type": "part",
+          "size": "197G",
+          "fstype": "ext4",
+          "mountpoint": null,
+          "partlabel": "bak2-home",
+          "partn": 3,
+          "uuid": "KKKK"
+        },
+        {
+          "name": "sdc4",
+          "path": "/dev/sdc4",
+          "type": "part",
+          "size": "8G",
+          "fstype": "swap",
+          "mountpoint": null,
+          "partlabel": "bak2-swap",
+          "partn": 4,
+          "uuid": "LLLL"
+        }
+      ]
+    }
+  ]
+}

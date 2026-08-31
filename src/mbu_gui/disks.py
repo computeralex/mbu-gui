@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
+from dataclasses import dataclass
+import json
+import re
+from typing import Any
+
+
+_SET_NAME_RE = re.compile(r"^[A-Za-z0-9]+$")
+_NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]")
+
+_MOUNT_FUNCTIONS = {
+    "/": "root",
+    "/home": "home",
+    "/boot": "boot",
+    "/boot/efi": "efi",
+    "/tmp": "tmp",
+}
+
+_UNNAMED_LIVE_REASON = (
+    "This computer's partitions are not named for MBU yet. Use Set up this computer."
+)
+_NO_BACKUP_REASON = "Plug in the backup disk"
+_MULTIPLE_BACKUP_REASON = (
+    "Several backup disks are connected. Unplug the extras so only the one you want to update is attached."
+)
+_MULTIPLE_BACKUP_STATUS = "Several backup disks are connected"
+
+
+@dataclass(frozen=True)
+class Partition:
+    name: str
+    path: str
+    disk: str
+    partn: int | None
+    size: str
+    fstype: str | None
+    mountpoint: str | None
+    partlabel: str | None
+    uuid: str | None
+
+
+@dataclass(frozen=True)
+class Disk:
+    name: str
+    path: str
+    size: str
+    model: str | None
+    partitions: list[Partition]
+
+
+@dataclass(frozen=True)
+class Inventory:
+    disks: list[Disk]
+    live_disk: str | None
+    live_set: str | None
+    backup_sets: list[str]
+    live_functions: list[str]
+    unnamed_live: bool
+    multiple_backup_sets: bool
+    status_line: str
+    start_blocked_reason: str | None
+
+
+def is_valid_set_name(name: str) -> bool:
+    return _SET_NAME_RE.fullmatch(name) is not None
+
+
+def split_mbu_label(label: str | None) -> tuple[str, str] | None:
+    if label is None or "-" not in label:
+        return None
+    set_name, function = label.split("-", 1)
+    if not is_valid_set_name(set_name) or not is_valid_set_name(function):
+        return None
+    return (set_name, function)
+
+
+def propose_function(part: Partition) -> str:
+    mount = part.mountpoint
+    if mount in _MOUNT_FUNCTIONS:
+        return _MOUNT_FUNCTIONS[mount]
+    if part.fstype == "swap":
+        return "swap"
+    if part.fstype == "vfat" and not mount:
+        return "efi"
+    if mount:
+        stripped = _NON_ALNUM_RE.sub("", mount.rsplit("/", 1)[-1])
+        if stripped:
+            return stripped
+    suffix = "" if part.partn is None else str(part.partn)
+    return f"part{suffix}"
+
+
+def propose_labels(inventory: Inventory, set_name: str) -> list[tuple[Partition, str]]:
+    labels: list[tuple[Partition, str]] = []
+    for disk in inventory.disks:
+        if disk.name != inventory.live_disk:
+            continue
+        for part in disk.partitions:
+            labels.append((part, f"{set_name}-{propose_function(part)}"))
+    return labels
+
+
+def candidate_backup_disks(inventory: Inventory) -> list[Disk]:
+    return [disk for disk in inventory.disks if disk.name != inventory.live_disk]
+
+
+def load_lsblk(text: str) -> Inventory:
+    return parse_lsblk(json.loads(text))
+
+
+def parse_lsblk(data: dict[str, Any]) -> Inventory:
+    disks = _disks_from_blockdevices(data.get("blockdevices") or [])
+    live_part = _live_partition(disks)
+    live_disk = live_part.disk if live_part is not None else None
+    live_parsed = split_mbu_label(live_part.partlabel) if live_part is not None else None
+    live_set = live_parsed[0] if live_parsed is not None else None
+    unnamed_live = live_parsed is None
+    live_functions = _live_functions(disks, live_disk, live_set)
+    backup_sets = _backup_sets(disks, live_set)
+    multiple_backup_sets = len(backup_sets) > 1
+    return Inventory(
+        disks=disks,
+        live_disk=live_disk,
+        live_set=live_set,
+        backup_sets=backup_sets,
+        live_functions=live_functions,
+        unnamed_live=unnamed_live,
+        multiple_backup_sets=multiple_backup_sets,
+        status_line=_status_line(backup_sets),
+        start_blocked_reason=_start_blocked_reason(unnamed_live, backup_sets),
+    )
+
+
+def _disks_from_blockdevices(blockdevices: list[dict[str, Any]]) -> list[Disk]:
+    disks: list[Disk] = []
+    for dev in blockdevices:
+        if dev.get("type") != "disk":
+            continue
+        name = dev["name"]
+        disks.append(
+            Disk(
+                name=name,
+                path=dev.get("path") or f"/dev/{name}",
+                size=dev.get("size") or "",
+                model=dev.get("model"),
+                partitions=_partitions_for_disk(dev, name),
+            )
+        )
+    return disks
+
+
+def _partitions_for_disk(dev: dict[str, Any], disk_name: str) -> list[Partition]:
+    parts: list[Partition] = []
+    for child in dev.get("children") or []:
+        for node in _walk(child):
+            if node.get("type") == "part":
+                parts.append(_partition_from_node(node, disk_name))
+    return parts
+
+
+def _walk(node: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    yield node
+    for child in node.get("children") or []:
+        yield from _walk(child)
+
+
+def _partition_from_node(node: dict[str, Any], disk_name: str) -> Partition:
+    name = node["name"]
+    return Partition(
+        name=name,
+        path=node.get("path") or f"/dev/{name}",
+        disk=disk_name,
+        partn=node.get("partn"),
+        size=node.get("size") or "",
+        fstype=node.get("fstype"),
+        mountpoint=node.get("mountpoint"),
+        partlabel=node.get("partlabel"),
+        uuid=node.get("uuid"),
+    )
+
+
+def _live_partition(disks: list[Disk]) -> Partition | None:
+    for disk in disks:
+        for part in disk.partitions:
+            if part.mountpoint == "/":
+                return part
+    return None
+
+
+def _live_functions(disks: list[Disk], live_disk: str | None, live_set: str | None) -> list[str]:
+    if live_disk is None or live_set is None:
+        return []
+    functions: list[str] = []
+    for disk in disks:
+        if disk.name != live_disk:
+            continue
+        for part in disk.partitions:
+            parsed = split_mbu_label(part.partlabel)
+            if parsed is not None and parsed[0] == live_set:
+                functions.append(parsed[1])
+    return functions
+
+
+def _backup_sets(disks: list[Disk], live_set: str | None) -> list[str]:
+    names: set[str] = set()
+    for disk in disks:
+        for part in disk.partitions:
+            parsed = split_mbu_label(part.partlabel)
+            if parsed is not None and parsed[0] != live_set:
+                names.add(parsed[0])
+    return sorted(names)
+
+
+def _status_line(backup_sets: list[str]) -> str:
+    if not backup_sets:
+        return _NO_BACKUP_REASON
+    if len(backup_sets) > 1:
+        return _MULTIPLE_BACKUP_STATUS
+    return f"Backup disk `{backup_sets[0]}` is connected"
+
+
+def _start_blocked_reason(unnamed_live: bool, backup_sets: list[str]) -> str | None:
+    if unnamed_live:
+        return _UNNAMED_LIVE_REASON
+    if not backup_sets:
+        return _NO_BACKUP_REASON
+    if len(backup_sets) > 1:
+        return _MULTIPLE_BACKUP_REASON
+    return None
