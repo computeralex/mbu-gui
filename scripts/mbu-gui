@@ -1,0 +1,5 @@
+#!/usr/bin/python3
+import sys
+sys.path.insert(0, "/usr/lib/mbu-gui")
+from mbu_gui.__main__ import main
+raise SystemExit(main())
