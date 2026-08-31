@@ -62,6 +62,20 @@ class Inventory:
     status_line: str
     start_blocked_reason: str | None
 
+    @classmethod
+    def empty(cls, reason: str) -> Inventory:
+        return cls(
+            disks=[],
+            live_disk=None,
+            live_set=None,
+            backup_sets=[],
+            live_functions=[],
+            unnamed_live=True,
+            multiple_backup_sets=False,
+            status_line="Could not read disks",
+            start_blocked_reason=reason,
+        )
+
 
 def is_valid_set_name(name: str) -> bool:
     return _SET_NAME_RE.fullmatch(name) is not None

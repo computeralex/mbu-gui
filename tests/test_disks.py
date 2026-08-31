@@ -2,6 +2,7 @@
 from pathlib import Path
 
 from mbu_gui.disks import (
+    Inventory,
     candidate_backup_disks,
     is_valid_set_name,
     load_lsblk,
@@ -69,3 +70,8 @@ def test_candidate_backup_disks_excludes_live():
     inv = _load("lsblk_named.json")
     names = [d.name for d in candidate_backup_disks(inv)]
     assert names == ["sdb"]
+
+
+def test_empty_inventory_reason():
+    inv = Inventory.empty("lsblk failed")
+    assert inv.start_blocked_reason == "lsblk failed"
