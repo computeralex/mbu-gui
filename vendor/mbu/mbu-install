@@ -1,0 +1,40 @@
+#!/bin/bash
+#
+# mbu-install -- Final stage of install or re-install of MBU
+# Only required for installing GUI components.
+#
+source ./mbulib || { echo "$0 : Run this in MBU directory only - Bye!" ; exit 1; }
+
+echo "Press ENTER to install or reinstall GUI components of MBU"
+read junk
+set -e
+
+echo $0 Installing MBU Icon file
+mkdir -p $HOME/.local/share/icons
+cp -a mbu-icon.png $HOME/.local/share/icons/.
+
+echo $0 Installing MBU Desktop Launch file
+mkdir -p $HOME/Desktop
+cp -a mbu.desktop $HOME/Desktop/.
+
+echo $0 Installing MBU Menu Launch file
+mkdir -p $HOME/.local/share/applications
+cp -a mbu.desktop $HOME/.local/share/applications/.
+
+# mbu.desktop expects to use gnome-terminal for no particularly
+# good reason other than it does the job and likely to be available.
+# If gnome-terminal is not installed, attempt to install it
+if which gnome-terminal >/dev/null ; then
+    echo $0 gnome-terminal is already installed, GOOD.
+else
+    echo $0 Installing gnome-terminal.
+    if which apt >/dev/null ; then
+        # Debian based Linux distribution
+        sudo apt install gnome-terminal
+    else
+        # Other Linux distributions
+        echo PLEASE INSTALL gnome-terminal manually
+    fi
+fi
+echo $0 DONE
+# MBU Release mbu-20251115

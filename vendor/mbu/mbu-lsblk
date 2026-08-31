@@ -1,0 +1,6 @@
+#!/bin/bash
+#
+# mbu-lsblk  -- list disk devices
+lsblk -o NAME,PARTLABEL,MOUNTPOINTS,FSUSE%,SIZE,UUID
+
+# MBU Release mbu-20251115

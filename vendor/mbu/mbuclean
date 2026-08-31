@@ -1,0 +1,18 @@
+#!/bin/bash
+#
+# mbuclean -- clean up after MBU operations:
+#       Umounting temporarily mounted partitions.
+#       Removing symlinks to permanently mounted partitions.
+#       Removing the directory that holds these.
+# This is non-interactive and just does the job.
+#
+# Use option "help" for a help message.
+#
+# This won't work if you have made the temporarily mounted partitions "busy"
+# by for example, having a program running whose current directory is within
+# the partition.
+#
+# This must be run with the MBU directory being the current working directory!
+source ./mbulib || { echo "$0 : Run this in MBU directory only - Bye!" ; exit 1; }
+qStart mbuClean "$@" 
+# MBU Release mbu-20251115

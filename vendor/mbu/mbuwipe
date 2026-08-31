@@ -1,0 +1,11 @@
+#!/bin/bash
+#
+# mbuwipe -- functionally erase a disk or partition.
+#       Erases the key parts using "wipefs".
+#
+# Use "help" option for help message.
+
+if test -z "${mbuwipeOnce:-}" ; then mbuwipeOnce=y ;  else return 0 ; fi
+source ./mbulib || { echo "$0 : Run this in Installation Directory only - Bye!" ; exit 1; }
+qStart mbuFormatWipe "$@"    # Run command if and only if this script is the top level
+# MBU Release mbu-20251115

@@ -1,0 +1,6 @@
+#!/bin/bash
+#
+# mbulist -- list disk partitions including useful information
+lsblk -o NAME,PARTLABEL,MOUNTPOINTS,FSUSE%,SIZE,UUID
+
+# MBU Release mbu-20251115

@@ -1,0 +1,45 @@
+[Desktop Entry]
+#
+# When installed, you will have an icon on your Linux desktop which
+# will allow launching MBU backups.
+#
+# Installation (done by mbu-install) :
+# *. Copy this file (mbu.desktop) to $HOME/Desktop/
+# *. Copy mbu-icon.png to $HOME/.local/share/icons/
+# *. Install gnome-terminal
+#
+# Customization:
+# *. If you did NOT install mbu directory as $HOME/mbu as recommended,
+#       you will need to modify the Path line below 
+#       (relative to $HOME, or absolute path).
+# *. You might want to change the terminal window size (--geometry option).
+# *. You could choose a different terminal emulator.
+#
+Version=1.0
+Type=Application
+Categories=System;
+Name=MBU Data Backup
+Comment=Data Backup
+Icon=mbu-icon.png
+Path=mbu
+Terminal=false
+Exec=gnome-terminal --geometry 140x50 --title 'MBU Data Backup' -x bash -c " echo ATTACH backup disk and press ENTER ; read junk ; sudo ./mbup ; echo PRESS ENTER to close window ; read junk "
+StartupNotify=true
+#
+# NOTE: with xfce4 this also works setting Terminal=true and simply omitting the
+# terminal name in Exec= 
+# but it seems unwise to count on it.
+# Tested with:
+#       xfce4 and xfce4-terminal  - okay
+#       xfce4 and gnome-terminal  - okay
+#       xfce4 and mate-terminal  - okay
+#       xfce4 and qterminal  - fails
+#       xfce4 and lxterminal - fails, even when using -e
+#       xfce4 and xterm  - fails
+#
+# Because of the inconsistency of terminal emulators,
+# and that gnome-terminal is popular and works,
+# gnome-terminal is chosen to be the one to use.
+#
+
+# MBU Release mbu-20251115

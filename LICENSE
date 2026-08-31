@@ -1,0 +1,16 @@
+MBU GUI (this front end) and original MBU scripts
+
+Ted Merrill is the sole author of original MBU (the bundled scripts).
+He released MBU uncopyrighted. You may treat that code as public domain,
+or under the MIT or BSD licenses, at your discretion. Do not claim
+ownership of what Ted Merrill wrote.
+
+This GUI is a separate wrapper. It is released the same way: public
+domain, or MIT or BSD at your discretion. Do not claim ownership of
+this GUI either.
+
+This GUI does not speak for Ted Merrill and does not offer his support.
+
+NO WARRANTY. This software is provided as-is. The authors of this GUI
+are not responsible for data loss, unbootable disks, failed backups,
+or anything else people do with it.

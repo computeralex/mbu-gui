@@ -1,0 +1,3811 @@
+#!/bin/bash
+#
+# qlib -- Debugging and execution framework for bash scripts.
+#       Attempts to make life easy for the developer.
+# Author: Ted Merrill, March 2023   Updated: 2023-04-03
+#
+##############################################################################
+# Q FEATURES
+# -----------------------------------------------------------------
+# -- Features are generally optional.
+#       But for full advantage, follow all Q programming guidelines.
+# -- Parameter passing / value return support :
+#       Makes it simpler to pass values between caller and caller
+#       functions, avoiding some bash horrors.
+# -- Standardized message generation, both user and debug.
+#       Makes it easier to understand the messages.
+#       Debug statements are simple and generally can be left it.
+# -- Standardized error handling.
+# -- Standarized user interaction.
+# -- Interactive debugger
+# -- Breakpoint debug method, with or without debugger.
+# -- Any program properly written with Q is also a library
+#       That is, you can source it into another script and call its
+#       functions; the script at the top level (that invoked the
+#       other script(s)) decides which function runs first
+#       (or you can drop into the debugger).
+# -- You can avoid learning so much about the horrors of bash if
+#       you stick to the subset of bash recommended.
+#       In spite of bash's problems, it is a useful language when
+#       you can solve a problem by tying together a number of
+#       external programs.
+#
+#
+# Q CAVEATS
+# ---------------------------------------------------------
+# -- To gain all the advantages, you must do some "mark up" of your
+#       code, and do it consistenly. Not hard, but perhaps not suitable
+#       for a large existing bash program.
+# -- If you are worried about efficiency, you would not use bash,
+#       but Q certainly makes it a little worse.
+# -- Bash is a quirky, unsafe language. Cannot entirely hide that.
+#
+#
+# GETTING STARTED
+# ---------------------------------------------------------
+# -- Read through this file, perhaps skipping everything inside of a function;
+#       look for the descriptions of how to use the functions.
+# -- Read through qtemplate. Follow instructions therein and experiment.
+#       (qtemplate is an example bash program you can copy and modify)
+# -- Read through this file again.
+# -- Do NOT use the functions in this file as much of an example of how
+#       to write your code; most of these functions attempt to hide the
+#       messiness of using bash from you, and as a result are messy themselves.
+#
+#
+# BASH VARIABLE NAME SCOPING
+# ---------------------------------------------------------
+# Bash has horrendous issues with name scoping.
+# With bash, variables never need to be declared.
+# If you take no care, all variables are "global" and it is more than
+# easy for a called function to trash the variables in use by a caller
+# function!
+#
+# For obvious(?) reasons, name all variables intended to be global
+# with names that are likely to be unique.
+# This is usually accomplished by staking out certain name prefixes
+# with the hope that noone else will use them.
+# For example, qlib hopes that no other code will use variables (or functions)
+# beginning with "q".
+# A good bet is to pick a 3 or 4 letter prefix that is unlikely to be
+# the beginning of any English word.
+# This applies to function names as well as global variables.
+# For example, you might name your project "zok" and and make the names
+# of all the global variables, functions and even the filenames begin with
+# "zok".
+#
+# Mistyping easily causes access to variable names that were never
+# intended to exist. Values assigned disappear into nothingness.
+# By default, qlib sets the bash -u flag (e.g. set -u).
+# This causes reads from unset variables to abort the entire program.
+# (Writing to an unset variable makes it "set" so it is only one way).
+# Unfortunately, a violation of -u is punished by aborting the program.
+# It is sad that the entire program aborts, but perhaps it is worth it.
+# If not, then add to your script (following source ./qlib and before
+# invoking qStart) the line:
+#       set +u   # Disable undefined variable fatal errors
+#
+# Minimize variables declared outside of any function.
+# Have the barest minimum amount of code outside of any function.
+# 
+# Declare almost all your variables with the bash "local" construct.
+# This protects any variable of the same name deeper in the calling stack;
+# the deeper variable cannot be accessed at all.
+# Please note this does NOT protect the variables of the function from
+# being thrashed by other functions called by the function.
+# All functions must be written to protect their callers by using "local".
+# Do this consistently.
+#
+# If your function accepts a variable name as an argument, so that it can
+# be written to (or read?) then your function must use unique names for its
+# local variables, so as to not hide the variable of the caller;
+# and hope that the caller will never use variable names that could collide
+# with those in the called function.
+# Try to avoid writing this type of code, since qlib already supports you.
+# Several qlib functions accept variable names as arguments, and they
+# are hopefully as safe as possible in how they work.
+# Note that the only way to write a value whose name was passed is via
+# the bash builtin printf function with the -v option (or perhaps read -v).
+#
+#
+# THE SUBSET OF BASH TO USE IF YOU ARE NOT A BASH EXPERT
+# ---------------------------------------------------------
+# See above about variable name scoping, and stick to it,
+# and below about using Q features.
+# Besides that...
+#
+# Use double qoutes around variable dereferences, e.g.
+#       "$var"
+# if there is the slightest possiblity that the variable might contain
+# any characters special to bash.
+# It would be sane to always do this double quoting.
+#
+# Avoid using the && , || and { and } operators except for the occasional 
+# very simple case, as the syntax and logic are hard to get right.
+# Instead use if statement ; then statement; statement ; fi ...
+# the syntax is still difficult, but the logic is pretty easy.
+# The remaining logic problem is that bash has truth/false backwards from
+# the civilized world.
+# You will end up putting a lot of ! operators into your code, e.g.
+#       if ! mycommand myarg ; then
+#           errorhandler 
+#           qReturnFail "big doo doo"; return 1
+#       fi
+#       do what we need to do 
+# Use indentation to make nesting clear.
+#
+# For testing variables and related, use the bash "test" builtin command.
+# This makes your code easy to read and understand.
+#
+# Always make sure positional arguments exist before using them.
+# After testing, copy them into a local variable and shift immediately.
+# Use the following test, e.g.:
+#       if test $# -gt 0 ; then
+#           local arg="$1" ; shift
+#           do something with $arg
+#       fi
+# Try to avoid needing to rewind fetching arguments, but here is how to do it:
+#       set -- "$arg" "$@"   # push back fetched arg
+#
+#
+# GLOBAL CONFIGURATION VARIABLES
+# ---------------------------------------------------------
+# Unix (Linux) and bash have specific support for passing key=value pairs
+# between programs; these are called environmental variables.
+# Bash extends this within a bash script with "key" being a variable name
+# which is given the value.
+# All such environmental variables are automatically bash variables.
+# While this has much opportunity for abuse, it is also very handy.
+#
+# Each layer of programs and scripts and functions within your program
+# can have the opportunity to override or supplement the value passed to it.
+# The usual case is to have each script provide a default value in case
+# one was not passed.
+# As a shortcut, it is usually assumed that an empty value is equivalent
+# to not having been passed. (But beware of accessing unset variables in a
+# bash script (see above about set -u).
+# Try to make it so that configuration variables never need an empty value
+# (i.e. so that at some level, perhaps the last, a non-empty value will
+# be substituted).
+#
+# Q strongly encourages the following at the main level of your scripts
+# (see qtemplate for more information) e.g.:
+#     : ${foobarConfigExample:='configuration-example'}
+# In this example, foobarConfigExample is given a value only if it was not
+# set or if it had an empty value.
+# This allows setting this from a parent script or from the interactive
+# command line... so do this even for the most lowly script.
+#
+# Example: This turns on debugging messages:
+#       qbug=y ./qlib command arg...
+# This turns on breakpoints:
+#       qbp=y ./qlib command arg...
+# This does both:
+#       qbug=y qbp=y ./qlib command arg...
+# 
+#
+#
+# USE OF stdin, stdout and stderr
+# ---------------------------------------------------------
+# stdin: qReadUser reads from stdin. You could certainly use bash read function
+# directly; qReadUser gives a standardized experience to it which may
+# be appropriate for commandline interaction with a user.
+#
+# stderr: qlib always writes messages to stderr, except where the message is a
+# return or value (see next paragraph).
+# qlib provides qprint as the alternative to echo, and qprintf as the alternative
+# to printf.
+#
+# stdout: A few qlib functions have the option of (or always) emit to stdout
+# as a way of returning values. And a script can be written (as qlib is) so that
+# if it is the top level script, it will execute a command/function passed
+# as argument(s) and the write the result (with added newline) to stdout. 
+# To write to stdout, typically you would use bash builtins echo or printf.
+#
+#
+# CALLING FUNCTIONS, PASSING OPTIONS / ARGUMENTS
+# ---------------------------------------------------------
+# Pass arguments to functions in the usual bash way, and usually call them
+# in the usual bash way.
+#
+# You may sometimes want to precede the call to the function with qrun,
+# which provides various control and debugging capabilies;
+# this is particularly helpful when calling higher level functions,
+# and provides a way to get results back (describe below).
+# For example,
+#       local myvariable
+#       if ! qrun r=myvariable myfunction myargs ; then
+#           qReturnFail "Couldnt do it" ; return 1
+#       fi
+#       if test -z "$myvariable" ; then
+#            something
+#       fi
+# qrun has options for retrying, and receiving results from the commands
+# stdout.
+#
+#
+# RECEIVING OPTIONS
+# ---------------------------------------------------------
+# Q encourages the following style of programming of functions in regards
+# to receiving of options by functions. 
+# You can do whatever you want, but this style is easiest,
+# most extensible and provides nice consistency:
+#
+# Your function should almost always begin with:
+#       qEnter "$@"
+# This adds automatic debugging capability.
+# If you omit it, you lose that capability.
+# You may want to omit it for very low level functions.
+# 
+# Options should proceed positional parameters.
+# Positional parameters should be avoided if there are, or will possibly be,
+# many distinct parameters to pass.
+# The obvious time to have positional parameters is for a variable length
+# list of parameters (e.g. a list of filenames or etc.), which would be
+# at the end of the arguments to the function.
+#
+# Options should be allowed in any order; delay processing of the options
+# until all have been accumulated.
+# The Q function qOption can then be used with a minimum of coding,
+# particulary if your option names are the same as the variable names holding
+# the result.
+#
+# It is preferrable to use the following form for options:
+#       key=value
+# This avoids confusion about which option and which value go together.
+# Avoid beginning options with '-' as such decoration is entirely 
+# unnecessary and just adds to the general clutter.
+#
+#
+# RETURNING SUCCESS/FAILURE STATUS FROM FUNCTIONS
+# ---------------------------------------------------------
+# Success/failure is returned by the bash return statement in it's usual
+# backward-ness : return 0 for success, return 1 (or nonzero) for failure.]
+#
+# To allow for debugging, always precede each "return 1" with a call to
+# qReturnFail.  You may pass a debugging message to qReturnFail, e.g.
+#       qReturnFail "we died, sorry" ; return 1
+#
+# Likewise, for debugging always precede each "return 0" with a call to
+# qReturnOk.  You may pass a return result at the same time, e.g.
+#       qReturOk "$result" ; return 0
+#
+#
+# RECEIVING SUCCESS/FAILURE STATUS FROM FUNCTIONS
+# ---------------------------------------------------------
+# It should rarely or never be necessary to use $? ...
+# use $? only with great care as bash quickly loses it.
+# This should be tested# with the usual backward if or while bask constructs.
+#
+# By default, qlib sets the bash -e flag (e.g. set -e).
+# This causes unhandled errors (i.e. unhandled nonzero return values)
+# to fault the calling function.
+# This is useful information about a possible bug in your program,
+# but sometimes may be spurious.
+# At least it is only the calling function, and not the entire program.
+# To deliberately throw away the return status, try:
+#       cmd || true
+#
+# Note that qrun returns the status of the command it executed
+# (adding debugging).
+#
+# 
+# RETURNING VALUES FROM FUNCTIONS
+# ---------------------------------------------------------
+# To pass back actual return data, you may invent your own methods, but
+# Q specifically provides a method that simplify your coding
+# and provides debugging and breakpointing.
+#
+# Call qReturnOk with the result as an argument (with no argument,
+# the result is empty, which often makes sense).
+# Do this just before the return 0 statement, e.g.
+#       qReturnOk "$result" ; return 0
+#
+# Under the hood, qReturnOk puts the result in the global variable qresult.
+# Usually you should avoid every referencing qresult directly...
+# it should work, but you lose debugging capability.
+#
+# Another method is to simply print the result to stdout (e.g. using echo).
+# However, it is rare that your own functions would do this with each other
+# as there are various practical problems.
+#
+#
+# RECEIVING VALUES FROM CALLED COMMANDS
+# ---------------------------------------------------------
+# qrun r=varname command...
+# The command is executed and the return value is placed into the variable
+# named varname.
+# Options to qrun determine how the result is returned from "command" to
+# qrun.
+# The default method is that the called command is a function in your
+# program that calls qReturnOk to pass the return value back.
+#
+# With an option, qrun will read the stdout of the command and pass it
+# back to you; this is typically necessary where the command is an external
+# program.
+# NOTE: with this option, the command is run in a subshell and it is
+# impossible for it to modify variables in your program.
+# Therefore, this method should probably not be used with your own functions.
+#
+# qResult varname
+# You don't need qrun everywhere. It's fine to call your own functions
+# directly.  The function qResult, called with a variable name
+# will put the result into the named variable, e.g.:
+#       if ! somefunction someargs ; then qReturnFail ; return 1 ; fi
+#       local myresult; qResult myresult
+#
+# Under the hood, qrun and qReuslt get the result via 
+# the global variable qresult.
+# Usually you should avoid every referencing qresult directly...
+# it should work, but you lose debugging capability.
+# Both qResult and qrun clear qresult after returning it's value,
+# which avoids certain problems that can arise.
+#
+# In some places it makes sense to use $qresult directly.
+# An example is qOption which returns the number of arguments it uses, 
+# for example (in qtemplate):
+#     qOption 'filepath,maxwidgets,maxsize,'  ; shift $qresult
+#
+# With no arguments, qResult writes the result (passed by qReturnOk)
+# to the stdout. This allows the following, e.g.:
+#       local myresult=$(qResult)
+# This can be very quirky since qResult is running in a subshell;
+# therefore it should be avoided.
+# 
+# USER INTERACTION
+# -----------------------------------------------------------------
+# qlib provides qUserRead which prompts the user and then accepts
+# an answer.
+# Or you can print the prompt directly using qUserPrompt and then
+# do your own reading of the input if you really want.
+# See comments above qUserPrompt and qUserRead (below).
+# 
+#
+# MESSAGES
+# ---------------------------------------------------------
+# qlib emits various messages for command line use for
+# developer and user information, using the following.
+# The messages may be suppressed according to class of variable
+# by various flags, esp. configuration variable qbug=y turns on
+# debug level messages.
+# The messages are colored (e.g. error are red) unless turned off
+# with configuration variable qprettydiag=n .
+#
+# qerror message...
+#       This is for a message that indicate to the user a serious
+#       error leading to failure.
+#       Prints message to stderr only if global variable qerror is set to y
+#       (the default).
+#       This also a breakpoint if interactive debugging.
+# 
+# qstatus message...
+#       This is for a message that indicate to the user a routine condition
+#       for the user's education or so they know that your program is 
+#       actually doing something.
+#       Prints message to stderr only if global variable quser is set to y
+#       (the default).
+#       Messages are not colored.
+#       
+# qbug message...
+#       This is for a message to aid a developer in debugging the program.
+#       A normal user would not want to see such messages.
+#       Prints message to stderr only if global variable qbug is set to y
+#       (NOT the default).
+#
+# The messages generate include function name and line number, which
+# is sufficient to let you know that execution has reached your statement.
+# Therefore, you can often simply omit the message.
+# This includes qerror calls for conditions deemed unlikely and/or
+# difficult to describe to a user.
+#
+# In addition, qEnter, qReturnOk, qReturnFail and qResult all have their
+# own flavor of messages, but all only if qbug=y (i.e. for developers).
+#
+# qUserPrompt can be used to print a prompt to stderr that would be 
+# appropriate before reading user input.
+# It is called automatically by qUserRead (unless turned off by options)
+# and so probably need not be called directly.
+#
+#
+# TRAPPING EXCEPTIONS
+# -----------------------------------------------------------------
+# The configuration variable qtrap may be set to y to enable trapping
+# on exceptions that would otherwise kill the program immediately.
+# (By default, it is on; set to n to disable trapping).
+# It is not in general possible to resume execution of the program
+# from where it was so the best policy is to look around, clean up,
+# and exit the program.
+# This a limitation of bash.
+#
+# When an exception is trapped, a message is printed and then a 
+# back trace of the call stack.
+# If breakpoints are enabled (qbp=y) the interactive debugger will
+# be entered, from where you can inspect variables and even run some
+# parts of your program.
+# After this, application trap handlers will be called, if any.
+#
+# Applications may provide trap handlers to do cleanups before the
+# program exits due to an exception.
+# Such trap handlers are called with no arguments and should return 0.
+# They can do all normal sort of stuff, subject to that the program
+# may be in an unknown state.
+# Applications should add their trap handlers by placing a call in the
+# initialization code, after source'ing other files and 
+# before the call to qStart (best, just before):
+#       source ...
+#       ...
+#       qTrapHandlerAdd myTrapHandler
+#       ...
+#       qStart ....
+# Such trap handlers are called in the order added, which should work out
+# to be that lower level handlers are called first.
+#
+#
+# DECLARING BREAKPOINTS
+# -----------------------------------------------------------------
+# Q implements breakpoints only where there is an explicit command:
+#       qbreakpoint
+# You may add these anywhere without harm (they only do something
+# when enabled), but typically you would only add these in a few
+# places as having too many slows down the developer doing debugging,
+# and they may be unnecessary if the breakpoints included in 
+# qlib routines are sufficient.
+#
+# qlib has breakpoints (qbreakpoint) in key places such as qEnter
+# and especially qReturnOk and qReturnFail.
+# These breakpoints are only reached when qbpq=y (default is n).
+# You can enable them by setting qbpq=y.
+# With qbp=y qbpq=n , only breakpoints you add will be reached,
+# plus a breakpoint on exception handling is always reached.
+#
+# When breakpoints are enabled (by setting qbp=y) the debugger
+# will be invoked (default action, which can be changed) at every
+# qbreakpoint.
+# Fortunately, the debugger allows disabling breakpoints as they
+# are encountered, so in a debugging session you can quickly disable
+# the individual breakpoints you are not interested in.
+#
+# See the discussion below about debugging using breakpoints.
+#
+#
+# BASIC Q USAGE AT SCRIPT LEVEL
+# -----------------------------------------------------------------
+# Best bet is to copy qtemplate to a name of your choosing, follow the
+# instructions therein, and modify your copy to do something useful.
+# Following is an overview:
+#
+# Begin your script with:
+#       #!/bin/bash
+# ... because this is required to be the very first line for
+# proper operation if the script is marked executable and executed
+# by it's name or filepath.
+#
+# Then, for safety, abort on unhandled errors:
+#       set -e
+# and detect commad failures:
+#       set -o pipefail
+# This can be extended to detection of use of undefined variables
+# by the line:
+#       set -u
+# Note that the 'u' set option may bite particularly hard as variables
+# must be set to something (perhaps empty) before using, even
+# positional parameters such as $1!
+# And failure means the program aborts.
+#
+# Next, since your script might be sourced into another script, include
+# a line like:
+#       if test -z "$myOnce" ; then myOnce=y ;  else return 0 ; fi
+# ... where "my" is a name you use uniquely.
+# This will prevent accidental double-sourcing of your script.
+#
+# Next, if you want to override defaults for any qbug configuration
+# variables, put that here, for example:
+#       : ${qbug:=y}  # Make default debug choice be yes
+# The above form allows overriding this choice from environmental
+# variables for example from the terminal command line or
+# another script:
+#       qbug=n myscript
+# ... where myscript is your script that uses qlib.
+#
+# Importantly, bring in qlib! :
+#       source ./qlib || { echo MISSING qlib 2>&1 ; exit 1; }
+# ... assuming that qlib is to be found in your current directory.
+# Q encourages running a program with all components in the same
+# directory.
+#
+# You may also use 
+#       source qlib
+# but in this case qlib will be searched for first in all the
+# directories named in the environmental variable PATH (qlib does
+# NOT need to be marked executable) and only if not found there
+# it will be located in the current directory.
+# 
+#
+# BASIC Q USAGE IN BASH SUBROUTINES
+# -----------------------------------------------------------------
+# [Note: Bash documentation uses the name "function" instead 
+#  of "subroutine"; I will use them inter-changeably]
+# 
+# qEnter:
+# Each subroutine should begin with the command
+#       qEnter [<msg>]...
+# Most usually and usefully, this is
+#       qEnter "$@"
+# The arguments of qEnter are used for diagnostics.
+# qEnter, when debugging messages are enabled, prints the
+# message (e.g. the list of arguments passed) in a debugging
+# message, very useful for debugging!
+# It also clears qresult to avoid confusion (see below).
+#
+# qReturnFail, qReturnOk:
+# Every bash subroutine should ideally return to the caller, 
+# in all cases, including at the end of the subroutine,
+# with one of the following:
+#       qReturnOk [<returnvalue>]... ; return 0
+#       qReturnFail [<diagnostic-msg>]... ; return 1
+# [Sadly there seems to be no way to get these routines to return
+# to caller for you... too bad! Be sure to do it yourself!].
+# These two routines print diagnostics when enabled.
+# More importantly, qReturnOk joins its arguments (with spaces)
+# and puts the return value where it can be obtained by the caller,
+# a variable called qresult.
+#
+# Note: Failure to call these routines (e.g. omitting a qEnter or
+# returning without calling qReturnOk or qReturnFail) is unlikely
+# to cause any big problems, so long as the return result gets
+# back somehow. But using them has big advantages.
+#
+# If you don't want to use qReturnOk/qReturnFail, you have a few
+# options, none of them great:
+#     bash functions, as well as Linux programs in general, do directly
+# return small integers besides the usual 0 for success 
+# ("true" for bash) and 1 for failure ("false" for bash.
+# The bash variable $? holds the latest result.
+# Since only small integers are supported, this is pretty limited.
+#     Your function can emit text to stdout (e.g. printf) where it
+# can be captured by a caller in the form of result=$(cmd args).
+# This is a very nice and concise approach that, however, suffers from
+# a few serious limitations. The function is executed in a separate
+# process so no "side effects" of the function (such as setting "global"
+# variables) have any effect for the caller... sad!
+# Another common problem is that there is easily confusion resulting
+# in other things besides the result being printed to stdout.
+#     Your function can values in "global" variables. In fact this is
+# what qReturnOk, qReturnFail and some other Q functions do.
+# So long as the "global" variables are uniquely named, this works well,
+# provided that the caller immediately stores the result(s) in a safe
+# place so as to not be overwritten by another call to your function!
+# [NOTE: bash doesn't actually have "global" variables. All variables
+# that are set in the main context or in a function are inherited by child
+# function calls, unless hidden by a local declaration in a function.
+# You can do some interesting things with declaring global variables as
+# local, but this must be considered vary carefully.]
+#     Your function can be passed the name of a variable to put the
+# return value into. The only way to do this is via the bash builtin
+# read or printf -v commands; 
+# you can't do e.g. $$varname=value which won't do that.
+# You also have to be very careful that the variable name passed has not
+# been shadowed by a local variable of your own; so you must give all your
+# local variables very unique names.
+# Because of these difficulties, it is recommended that you use 
+# qrun r=<varname> <cmd>...
+# ... and avoid writing your own code to return values like this.
+#
+#
+# DEBUGGING USING MESSAGES
+# -----------------------------------------------------------------
+# You can see all of the messages from all of the qbug commands
+# in your script by invoking your script with e.g.:
+#       qbug=y ./myprogram
+# This includes all of the qbug's in qlib functions, especially
+# qEnter, qReturnOk, qReturnFail, qrun and qResult ... which
+# gives you a lot of information about what your program is doing.
+# You can add additional qbug commands whereever it seems useful.
+#
+# If you are overwhelmed by the volume of debug messages, you might
+# temporarily put the following just before a key section:
+#       local qbug=y   
+# and just after that section:
+#       local qbug=n
+# Just remember to take these out when done!
+# The "local" will provide cheap protection for the rest of the code
+# to run with qbug unmolested.
+#
+#
+# DEBUGGING USING DIRECT FUNCTION ACCESS
+# -----------------------------------------------------------------
+# If your code is in a fle of the "library" type you can directly call
+# any subroutine from your command line, e.g.
+#       ./myprogram myInnerFunction myarg1 myarg2
+# A "library" file is distinguished by ending with:
+#       qStart - "$@"
+#
+# If your file is of the "program", meaning it ends with
+#       qStart myHighLevelFunction "$@"
+# then you can write a very small test file, say "mytest", like:
+#       #!/bin/bash
+#       : ${qbug:=y}   # set debugging parameters here
+#       source ./myprogram
+#       qStart - "$@"
+# and run it as (if you mark the file executable)
+#       ./mytest myInnerFunction myarg1 myarg2
+# or:
+#       bash mytest myInnerFunction myarg1 myarg2
+#
+# You can systematically call your inner functions and test them.
+# It may help sometimes to add "unit test" functions specifically to
+# aid in testing inner functions; you can probably leave these in
+# permanently.
+#
+#
+# DEBUGGING USING BREAKPOINTS
+# -----------------------------------------------------------------
+# You can activate all of the breakpoints in your scripts with e.g.:
+#       qbp=y ./myprogram
+# By default, this will bring up the debugger (qDebuggerI) at each
+# breakpoint (including ones built into qlib).
+# [The default breakpoint action may be modified by overriding the
+# configuration variable qbpoint_defaultcmd ... an expert option].
+#
+# qlib has breakpoints (qbreakpoint) in key places such as qEnter
+# and especially qReturnOk and qReturnFail.
+# These breakpoints are only reached when qbpq=y (the default).
+# You can disable them by setting qbpq=n.
+# By doing so, you will skip all qlib breakpoints and keep going
+# until you reach a breakpoint that you added to your code that
+# uses qlib.
+#
+# Assuming the defaults (apart from setting qbp=y), 
+# you will enter the debugger and see the prompt QDBUG.
+# See below about general use of the debugger before using it.
+#
+# You can add breakpoints to your code by simply adding a line
+#       qbreakpoint
+# In this case you may want to turn off the qlib builtin breakpoints.
+# A great way to do this is to write your own simple script:
+#       #!/bin/bash
+#       : ${qbug:=y}    # y : turn on debug messages (mabye?)
+#       : ${qbp:=y}     # y : turn on breakpoints
+#       : ${qbpq:=n}    # n : disable qlib builtin breakpoints
+#       source ./qlib
+#       qStart mymainfunction "$@"
+# If this simple script is called "mytest", you can then run it:
+#       bash mytest
+# and your program will fly by.
+# If you see a problem (e.g. from the debug messages), locate a point
+# in your code and add a breakpoint, then rerun mytest.
+# Your code will enter the debugger when it reaches your breakpoint.
+# (If it reaches some other breakpoint, enter B to disable that
+# breakpoint, then c to continue).
+# When it reaches your breakpoint, you can look at the values of
+# the variables, e.g.:
+#       echo $myvariable
+# When you are done with debugging that, you might remove the 
+# qbreakpoint command from your code, although you could leave it in.
+#
+# Note that the debugger learns about breakpoints only as they are 
+# entered. Therefore it is necessary to enter each breakpoint once
+# at least before you will be able to disable it specifically.
+# The currently reached breakpoint can be disabled with the "B"
+# command (use "h" for help)... henceforth hitting that breakpoint
+# will execute an alternate command, by default the one given by the
+# configuration variable qbpoint_altcmd which merely prints information
+# instead of entering the debugger.
+#
+# For a more fine tuned approach to disabling breakpoints, you can
+# use the "b" (lower case b) command to disable the current breakpath.
+# A breakpath is whole call stack sequence leading up to and including
+# the breakpoint.
+# Henceforth, the breakpoint is disabled only for that exact breakpath.
+#
+# So in general, each time you run your program using the debugger,
+# you will have to train the debugger which breakpoints to ignore.
+# Normally this is not a painful process, as you just use b or B commands
+# to disable unwanted breakpoints and then continue.
+#
+# Specific to breakpoints, the debugger has other commands:
+# l -- list breakpaths encountered so far, and their associated command.
+# L -- list breakpoints encountered so far, and their associated command.
+# e -- dialog to edit breakpath entries
+# E -- dialog to edit breakpoint entries
+# 
+# Each breakpoint and breakpath has an associated command.
+# Each such command begins with the letter y or n which specifies
+# whether the breakpoint/breakpath is enabled (y) or disabled.
+# Following the y or n may be an optional subcommand; this is an 
+# advanced feature for which you should refer to the qbreakpoint code.
+#
+# Note: the debugger only works if program was started with qStart,
+# which initializes the debugger global variables appropriately.
+#
+#
+# DEBUGGING USING INTERACIVE DEBUGGER
+# -----------------------------------------------------------------
+# First you need to get into the debugger.
+#
+# Your program will go into the debugger immediately if it begins work 
+# with something like:
+#       qStart - "$@"
+#
+# Otherwise, you can just start your program with breakpoints enabled,
+# e.g.:
+#       qbp=y ./myprogram myarg1 myarg2
+# This will quickly bring you to the debugger.
+#
+# You can turn breakpoints off once in the debugger, if you want:
+#       qbp=n
+#
+# The debugger accepts single line bash scripts of any sort.
+# It is easy to crash your program or mangle the program state.
+# You can call any of your functions and set any variables in scope.
+#
+# To continue the normal execution of your program, just press ENTER
+# for the default "c" command  (c = continue).
+#
+# Enter "h" for a short help message that explains the single letter
+# commands built in to the debugger.
+# Most of these regard breakpoints, see the above discussion on 
+# breakpoints.
+# 
+# Anything input line you enter that does not match the builtin single letter
+# commands is passed to the bash "eval" command and is interpreted as a
+# shell script.
+# Here are some examples of useful things you can do:
+#       set +u    -- turn off undefined variable checking 
+#       qbug=y    -- turn on debug messages
+#       qbpq=n    -- turn off qlib breakpoints
+#
+# You can call any function in your program or any external command. 
+# 
+#
+##############################################################################
+
+##############################################################################
+# Bash error handling. Setting these in essence redfines the
+# language... you will have to code much more tightly.
+# You can override these, after sourcing this file, at your peril...
+set -e                  # For safety, abort on unhandled errors!
+set -o pipefail         # Make command failure be an error
+set -u                  # Make use of unset variables an error
+
+##############################################################################
+# Other bash features that redefine the language
+shopt -s extglob     # Turn on extended pattern matching features (always!)
+
+##############################################################################
+# qOnce -- internal use to ensure we include this file only once 
+if test -z "${qOnce:-}" ; then qOnce=y ;  else return 0 ; fi
+
+##############################################################################
+# qlib configuration parameters -- 
+# you can override these in your script by setting them
+# in your script before including this file
+# SADLY, you cannot reliably force variables to have an empty value... beware!
+##############################################################################
+### General
+# qerror -- set to 'y' for error messages, else 'n'
+#       This is for messages for debugging major failures of commands;
+#       you will normally want to leave this on.
+#       Note: This does not affect the propogation of such errors.
+: ${qerror:='y'}
+# quser -- set to 'y' for some status messages, else 'n'
+#       This is for messages for debugging your actual backup operation,
+#       you will normally want to leave this on.
+: ${quser:='y'}
+# qbug -- set to 'y' for some debug messages, else 'n'
+#       This is for messages for debugging the scripts.
+: ${qbug:='n'}
+# qprogpath -- the full filepath of YOUR script.
+# (If you run THIS script by itself, instead of including it into your script,
+# it will be the full path of THIS script).
+: ${qprogpath:=$0}    # $0 is the invocation pathname
+# qprogname -- the name of YOUR script (e.g. for error messages).
+: ${qprogname:=$(basename $qprogpath)}
+# qDiagnosticPrefix -- prepended to diagnostic messages
+: ${qDiagnosticPrefix:=$qprogname}
+# qDiagnosticsHaveTimeStamp -- set to 'y' to add time stamps to diagnostic messages
+#       (this makes them harder to read)
+: ${qDiagnosticsHaveTimeStamp:='n'}
+# qdryrun -- set to 'y' to just pretend to do things.
+#       This is probably not very helpful, as your code is likely to quickly
+#       break.
+: ${qdryrun:='n'}
+# quserreadok -- set y if okay to read from user, n to abort if
+#               a user read is reached.
+: ${quserreadok:='y'}
+# qprettyprompt -- set y to use special effects on user prompt, else n
+: ${qprettyprompt:='y'}
+# qprettydiag -- set y to use special effects for diagnostic messages, else n
+: ${qprettydiag:='y'}
+
+# EXCEPTION HANDLING
+: ${qtrap:=y}      # y to trap exceptions in some cases
+
+# DEBUGGER CONFIGURATION:
+# qbugi_command -- default command for interactive debugger on empty input
+: ${qbugi_command:=c}     # see qDebuggerI_Help
+
+# BREAKPOINT CONFIGURATION:
+# qbp -- set to 'y' to enable interactive debugging, esp. breakpoints
+: ${qbp:=n}
+# qpbq -- y/n to enable/disable breakpoints builtin into qlib
+: ${qbpq:=n}
+# qbpoint_defaultcmd -- command to issue at breaks at "enabled" breakpoints
+#               if not otherwise customized per breakpoint.
+: ${qbpoint_defaultcmd:='qDebuggerI'}
+# qbpoint_altcmd -- command to use at a "disabled" breakpoint 
+: ${qbpoint_altcmd:='qprint "BREAKPOINT SKIPPED $qbpath_ilatest : $qbpath_latest"'}
+
+# DEVELOPMENT OF QLIB:
+# qUnitTest -- y to run qlib unit tests during initial reading of this file
+: ${qUnitTest:=n}   
+
+
+
+# If we sourced anything, we would put it here
+
+
+
+##############################################################################
+# Miscellaneous q global variables
+##############################################################################
+# qresult -- holds result data from subroutine call 
+#       (be sure to copy to another name immediately!
+#       Preferred access via qrun r=varname,  or $(qResult)
+qresult=''
+
+#maybe# # qNameRef -- bash has a bug(?), one cannot directly create and use
+#maybe# #       a manufactured name for an array, instead one needs to do it via
+#maybe# #       a "nameref" ... this variable may be used temporarily
+#maybe# declare -n qNameRef
+
+
+##############################################################################
+# qprint [<arg>...]   -- bash echo command redirected to stderr
+#       In the Q scheme, all diagnostics should go to stderr.
+##############################################################################
+qprint()
+{
+    echo "$@" >&2
+    return 0
+}
+
+##############################################################################
+# qprintf [<arg>...]   -- bash printf command redirected to stderr
+#       In the Q scheme, all diagnostics should go to stderr.
+#
+# NOTE that it is easy to run afoul of special character sequences in printf.
+# Best bet is to put all variables as arguments referred to by %s in the format
+# argument, as versus including them in the format.
+##############################################################################
+qprintf()
+{
+    printf "$@" >&2
+    return 0
+}
+
+
+##############################################################################
+# qArgCount [<arg>...] -- trivial function that echoes the no. of passed args
+##############################################################################
+qArgCount()
+{
+    echo $#
+}
+
+##############################################################################
+# Prettyization constants
+#       Escape Codes tell a terminal emulator to do special affects on 
+#       characters following, such as color or boldness.
+#       They originated with the VT100 terminal sold by Digital Equipment
+#       Corporation, and eventually became a standard.
+#       See: https://en.wikipedia.org/wiki/ANSI_escape_code
+#
+# CAVEATS: 
+# They don't display prettily in a text editor, when looking at a log.
+#
+# NOTES:
+# The $'...' form is necessary to interpret \e although \e is also recognized
+# with the format argument of printf.
+#
+##############################################################################
+qPretty_off=$'\e[0m'    # turn off text attributes
+qPretty_blue=$'\e[34m'  # foreground color
+qPretty_green=$'\e[32m'  # foreground color
+qPretty_yellow=$'\e[33m'  # foreground color
+qPretty_red=$'\e[31m'  # foreground color
+qPretty_magenta=$'\e[35m' # foreground color
+qPretty_underline=$'\e[4m'
+qPretty_bold=$'\e[1m'
+#.......... there are many more possiblities........
+
+
+##############################################################################
+# Diagnostic type information
+##############################################################################
+# Escape codes for pretty diagnostic attributes, by diagnostic type
+#       if not present, no escape codes are used.
+declare -A qDiagPrettyEscCodes=( )
+qDiagPrettyEscCodes[FAIL]="$qPretty_red$qPretty_underline$qPretty_bold"
+qDiagPrettyEscCodes[ERROR]="$qPretty_red$qPretty_underline$qPretty_bold"
+qDiagPrettyEscCodes[OUCH]="$qPretty_red$qPretty_underline"  # internal q error
+qDiagPrettyEscCodes[Status]=''
+qDiagPrettyEscCodes[Debug]="$qPretty_blue"
+qDiagPrettyEscCodes[Enter]="$qPretty_yellow"
+qDiagPrettyEscCodes[DoneOk]="$qPretty_yellow"
+qDiagPrettyEscCodes[Result]="$qPretty_green$qPretty_bold"
+
+
+
+##############################################################################
+# qDiagnostic <diagtype> <msg> 
+#               Internal low level handling for diagnostic messages
+#       <diagtype> is inserted into the diagnostic;
+#               should be no longer than 6 characters for most pleasing results;
+#               should match a table above for special handling.
+#       NOTE that this is to be called TWO levels down from the original caller
+#       
+##############################################################################
+qDiagnostic()
+{
+    # Low level function, do NOT use qEnter, do not even set qresult
+
+    # CAUTION give unique names for all local variables in order to
+    # preserve ability to see local variables in call stack!
+
+    local qd_saveresult="$qresult" # because we might trash it
+    local qd_esccode=''    # escape code for attributes
+    local qd_escend=''     # end attributes escape code
+    local qd_diagtype=OUCH
+    if test $# -gt 0 ; then
+        qd_diagtype="$1" ; shift
+    fi
+    if test "$qprettydiag" = y ; then
+        qd_esccode=${qDiagPrettyEscCodes[$qd_diagtype]:-}
+        if test -n "$qd_esccode" ; then 
+            qd_escend="$qPretty_off"
+        fi
+    fi
+    local qd_timestamp=''
+    if test "$qDiagnosticsHaveTimeStamp" = y ; then
+        printf -v qd_timestamp "%s" "$(date +%H:%M:%S)"
+    fi
+    local qd_linenum=${BASH_LINENO[1]}   # YES! 1 for caller of caller line number
+    local qd_fncname=${FUNCNAME[2]}  # 2 for caller of caller function name
+    local qd_msg="$*"
+    qd_msg=${qd_msg##*([[:blank:]])}  # trim leading blanks
+
+    # Try to make the messages line up by padding
+    local qd_part1
+    printf -v qd_part1 "%s:%s" \
+        "$qd_fncname"      \
+        "$qd_linenum" 
+##### should work, but does not:
+#    if test "$padlen" -gt 0 ; then
+#        printf -v padding "%-""$padlen""s" ""
+#    fi
+###### Somehow I cant get printf %-<n>s to work consistently
+    local qd_padlen=${#qd_part1}
+    local qd_padding=' '   # ensure at least one char of padding
+    while test "$qd_padlen" -lt 30 ; do
+        qd_padlen=$((qd_padlen+1))
+        qd_padding+=' '
+    done
+    local qd_dpadlen=${#qd_diagtype}
+    local qd_dpadding=''
+    while test "$qd_dpadlen" -lt 6 ; do
+        qd_dpadlen=$((qd_dpadlen+1))
+        qd_dpadding+=' '
+    done
+    local qd_tpadding=''
+    if test -n "$qd_timestamp" ; then qd_tpadding=' ' ; fi
+
+    qprintf "%s%s%s%s%s %s%s%s %s%s%s\n" \
+        "$qDiagnosticPrefix" \
+        "$qd_tpadding"     \
+        "$qd_timestamp"    \
+        "$qd_padding"      \
+        "$qd_part1"        \
+        \
+        "$qd_esccode"      \
+        "$qd_diagtype"     \
+        "$qd_dpadding"     \
+        \
+        "$qd_msg"          \
+        "$qd_escend"       \
+        ""
+        
+    # we cant call qReturnOk as we are too low level. So this will do:
+    qresult="$qd_saveresult"
+    return 0
+}
+
+
+##############################################################################
+# qbug -- print passed debug message to stderr and return success.
+#       Message prefixed by $qDiagnosticPrefix-Debug etc.
+#       Does NOTHING unless $qbug is 'y'
+# Call directly from subject function in order for function name to display
+# properly.
+# With no message, displays a default message with line number.
+##############################################################################
+qbug()
+{
+    # Low level function, do NOT call qEnter or qReturnOk
+    # CAUTION give unique names for all local variables in order to
+    # preserve ability to see local variables in call stack!
+
+    if test "$qbug" = y ; then
+        qDiagnostic Debug "$*"
+    fi
+    return 0
+}
+
+
+##############################################################################
+# quser -- print passed status message to stderr and return success.
+#       Message prefixed by $qDiagnosticPrefix-Status : <program-name> : <time-of-day> :
+#       DOES nothing unless $quser is 'y'
+# Call directly from subject function in order for function name to display
+# properly.
+##############################################################################
+quser()
+{
+    # Low level function, do NOT call qEnter or qReturnOk
+    # CAUTION give unique names for all local variables in order to
+    # preserve ability to see local variables in call stack!
+
+    if test "$quser" = y ; then
+        qDiagnostic Status "$*"
+    fi
+    return 0
+}
+
+##############################################################################
+# qerror -- print passed error message to stderr and return success.
+#       Message prefixed by $qDiagnosticPrefix-ERROR etc.
+# Call directly from subject function in order for function name to display
+# properly.
+# With no message, displays a default message with line number.
+##############################################################################
+qerror()
+{
+    # Low level function, do NOT call qEnter or qReturnOk
+    # CAUTION give unique names for all local variables in order to
+    # preserve ability to see local variables in call stack!
+
+    if test "$qerror" = y ; then
+        qDiagnostic ERROR "$*"
+    fi
+    test "$qbpq" = y && qbreakpoint  # possible breakpoint
+    return 0
+}
+
+
+
+##############################################################################
+# qOptionParse <option> -- parse an option string.
+#               Option string might have form <key>=<value>
+#       <option>  -- the string to be parsed
+#
+# NOTE: qOption is a better choice, although a little more limited.
+#
+#   Returns results in global/inherited variables:
+#       qooption -- copy of the input
+#       qokey -- parsed key (may be empty string)
+#       qovalue -- parsed value (may be entire input if no key= part)
+# It is strongly advised to quickly save these values in local variables
+# to avoid conflict with subsequent calls to qOptionParse OR
+# to declare qooption, qokey, qovalue to be local!
+#
+# Case 1: If option is not passed, key and value are empty.
+# Case 2: <option> does not contain an equal sign, or begins with an equal sign:
+#       The value is <option> and the <key> is empty.
+# Case 3: <option> contains an equal sign (and does not begin with one):
+#       The string before the (1st) equal sign is the key (not empty),  
+#       the string after the (1st) equal sign is the value (might be empty),
+#       and the equal sign is omitted from both key and value.
+#
+# Returns 0 in all cases, so you never need to check the return value.
+#
+# Recommended best practice 1:
+#       local qooption ; local qokey; local qovalue # variables of qOptionParse
+#       while test $# -gt 0 ; do
+#           qOptionParse "$1" ; shift
+#           if test "$qooption" = '=' ; then break; fi # positional params follow
+#           case "$qokey" in
+#               '') # no key
+#                   do domething with "$qooption"
+#               ;;
+#               somethingelse)
+#                   do something with "$qovalue"
+#               ;;
+#           esac
+#       done
+#       handle positional arguments here
+# Recommended best practice 2:
+#       while test $# -gt 0 ; do
+#           local option="$1" ; shift
+#           if test "$option" = '=' ; then break; fi # positional params follow
+#           qOptionParse "$option"; local key="$qokey"; local value="$qovalue"
+#           case "$key" in
+#               '') # no key
+#                   do domething with $option
+#               ;;
+#               somethingelse)
+#                   do something with $value
+#               ;;
+#           esac
+#       done
+#       handle positional arguments here
+#       
+##############################################################################
+qooption=''     # input to qOptionParse remembered here
+qokey=''        # output from qOptionParse here
+qovalue=''        # output from qOptionParse here
+qOptionParse()
+{
+    # Low level function, do NOT use qEnter
+
+    # CAUTION give unique names for all local variables in order to
+    # preserve ability to see local variables in call stack!
+    shopt -s extglob     # Turn on extended features - should always be on!
+
+    # Work directly into our output global/inherited variables
+    qooption=${1:-}   # copy input to qooption
+    qokey=''    # default no key
+    qovalue=''  # deafult no value
+    # Now parse it
+    case "$qooption" in
+        =*)     # Null key, entire input is the value
+            qovalue="$qooption"
+        ;;
+        *=*)    # Full key=value form
+            qokey=${qooption//=+(?)}
+            qovalue=${qooption/+([^=])=}
+        ;;
+        *)  # Missing equal sign, treat as null key with input as value
+            qovalue="$qooption"  
+        ;;
+    esac
+    # Low levelf unction, do NOT use qReturnOk
+    return 0
+}
+qOptionParse_UnitTest()
+{
+    echo "qOptionParse Unit Tests"
+    local qokey; local qovalue;   # required for qOptionParse
+    local option="foo=bar=wow=how" ; qOptionParse "$option" 
+    echo "TESTED: OPTION $option -> KEY $qokey VALUE $qovalue"
+    local option="foo=bar" ; qOptionParse "$option" 
+    echo "TESTED: OPTION $option -> KEY $qokey VALUE $qovalue"
+    local option="foo=" ; qOptionParse "$option" 
+    echo "TESTED: OPTION $option -> KEY $qokey VALUE $qovalue"
+    local option="foo" ; qOptionParse "$option" 
+    echo "TESTED: OPTION $option -> KEY $qokey VALUE $qovalue"
+    local option="=" ; qOptionParse "$option" 
+    echo "TESTED: OPTION $option -> KEY $qokey VALUE $qovalue"
+    local option="=bar" ; qOptionParse "$option" 
+    echo "TESTED: OPTION $option -> KEY $qokey VALUE $qovalue"
+    local option="" ; qOptionParse "$option" 
+    echo "TESTED: OPTION $option -> KEY $qokey VALUE $qovalue"
+    echo
+    return 0
+}
+if test "$qUnitTest" = y ; then qOptionParse_UnitTest ; fi
+
+
+
+
+##############################################################################
+# qOption <speclist> [<arg>]...  -- get multiple optional arguments.
+#       qOption handles optional parameters passed to your bash function.
+#       Optional parameters are parameters that may be given in any order,
+#       and are typically entirely before any positional parameters.
+#       qOption handles the arguments <arg>, using instructions from
+#       <speclist> until it finds an argument that it doesn't know what to
+#       do with, or it runs out of arguments.
+#       qOption returns status 0 and never knowingly generates an error
+#       or emits any error messages.
+#       qOption returns via qresult the number of arguments consumed, and the
+#       caller should typically shift arguments accordingly, checking if any left.
+#       Based on <speclist>, qOption tries to return the parameters values
+#       directly into the variables of the caller, which are passed by name.
+#
+#       If you are having trouble undestanding qOption failures, trying setting
+#               qobug=y
+#       first to get debugging messages for qOption
+#
+#       [<arg>]...    is most commonly in the form of "$@" to pass all 
+#       remaining args from the caller.
+#
+#       <speclist> is a single argument with commas (more readable?) or spaces 
+#       separating the components called <spec>, e.g.
+#               <spec>,<spec>,<spec>    for example.
+#       Extraneous commas or spaces are ignored.
+#       It would probably be a good idea to quote <speclist>... just in case?
+#
+#       There are a few special values of <spec> that simply alter the behavior
+#       of qOption, if seen anywhere in the <speclist>:
+#               QOIGNORE -- continue until an arg beginning with '=' is found
+#                       or the end of the <arg>s is reached, instead of
+#                       aborting on unmatched args.
+#       Otherwise,
+#       the format of <spec> is (examples below may make this more clear):
+#               <spec> ::= <key>[:<varname>][{=<altvalue>}|?}
+#       <key> is a non-empty word consisting of letters, digits, underscores,
+#               and certain punctuation characters allowed including hyphens;
+#               it is not advised to all punctuation other than hyphens
+#               and see below about <varname>.
+#       <varname> (note, preceded by colon) 
+#               is (optional) the actual name of your variable to assign to.
+#               Of course it must follow bash rules for variable names.
+#               You MUST provide a <varname> if the <key> differs from the
+#               name of the variable to assign to.
+#       <altvalue> (note, preceded by equal sign) is the value to use 
+#               ONLY for the "unvalued" case (see below); ignored otherwise.
+#               <altvalue> may not contain a question mark or an equal sign.
+#       (Only if no =<altvalue>, see above): A question mark (?) at the end 
+#               of <spec> indicates that the value is to be obtained from 
+#               another argument, ONLY for the "unvalued" case (see below),
+#               ignored otherwise.
+#               The content of the additional argument can be anything.
+#               NOTE: This is fundamentally incompatible with QOIGNORE.
+#
+#       About output variable names (from <varname> or implied by <key>):
+#       As usual, be hyper-vigilant not to unwittingly trash 
+#       the variables of functions lower down in the variable stack.
+#       [Do not use variable names that would conflict with qOption
+#       local variables, all of which begin with "qo".]
+#
+#       qOption is entirely driven by the <arg> stream and does not,
+#       for example, care if any <spec> were unmatched.
+#       You should assign your variables default values in case the
+#       caller of your function did not give options to set them.
+#
+#       qOption classifies each <arg> into one of 3 classes to obtain a value:
+#       (1) Any argument beginning with an equal sign (=) immediately
+#           ends processing, without eating the argument (incrementing the count).
+#       (2) An argument <arg> NOT containing an equal sign is considered 
+#           an "unvalued" argument.
+#           If <arg> exactly matches a <key> in a <spec> then a match is found.
+#           If a match is found, then the value is obtained from an <altvalue>
+#           if provided, or from an additional <arg> if the (?) form is used.
+#           The additional <arg> can be anything, but if no additional
+#           arguments are available then an empty string is substituted.
+#           If no match is found, then qOption terminates without eating 
+#           the argument (adding to the count).
+#           If no value is found (i.e. no =<altvalue> or ?) then 
+#           qOption also terminates without eating the argument.
+#           EXAMPLE: if matching <spec> was just "foo" and <arg> was "foo"
+#           there will be no match and processing will terminate;
+#           but if the <spec> was foo=<altvalue> then a match occurs and
+#           the resulting value will be <altvalue>.
+#       (3) An argument matching the general form 
+#                   <key>=<value>
+#           where <key> is subject to the same restrictions as for <spec>
+#           and <value> may contain ALMOST anything including being empty
+#           or containing an equal sign (<key>= stops at the first =),
+#           spaces or other punctuation (implemenation: must not contain ;).
+#           This is a "valued" option.
+#           If the <key> matches a <key> in a <spec>, then a match is found
+#           and the value is <value>.
+#           If no match is found, then qOption terminates without eating 
+#           the argument (adding to the count).
+#           
+#       As indicated above, if no match or no value is found, then qOption 
+#       terminates, returning the count of consumed arguments.
+#       Otherwise, the next step in the processing of the argument <arg>
+#       is to save the value in your variable according to the match.
+#       If <varname> was provided in the matched <spec>, then it was used.
+#       Otherwise, <key> is used as the name of your variable.
+#       Make SURE that your real variable name is so specified!
+#       The value is then stored into the named variable.
+#
+# Example:
+#   myHelp="xxx yyy"
+#   myFunc() {
+#       local foo=baz ; local bar=''; local help=n 
+#       qOption 'foo,bar,help=y,-help:help=y,--help:help=y' "$@" ; shift $qresult
+#       # Check for positional args.
+#       if $# -gt 0 ; then qReturnFail "Invalid arg: $1" ; return 1 ; fi
+#       if test "$help" = y ; then echo $myHelp ; echo ; return 0 ; fi
+#       case "$foo" in
+#               baz) doSomething ; ;;
+#               *) qReturnFail "Invalid option: foo=$foo" ; return 1 ; ;;
+#       esac
+#       ... etc ..
+#
+# In this example (with -help- in optionlist), the following invocations:
+#       myFunc help
+#       myFunc -help
+#       myFunc --help
+#       myFunc help=y
+#       myFunc -help=y
+#               (and etc.) will all print the help message
+#       myFunc foo=baz
+#               will call doSomething
+#       myFunc foo=somethingelse
+#               will return with an error
+#       
+#
+# NOTES:
+#       Failing to pre-declare your variables as "local" can result in
+#       clobbering the (supposed to be) local variables of the caller.
+#       Make sure that either each <key> in your <spec>s are actual
+#       variable names of yours, or you provide a proper <varname>.
+#
+#       Normally for each option name <name> you would have a preceding
+#       statement to give it a default value:
+#               local help=n
+#               local foo=baz
+#               local bar=''
+#       But it is also possible to leave it unset, and then later test it,
+#               local bar
+#               qOption...
+#               if test ! -v bar ; then 
+#                       qReturnFail "Option bar is mandatory" ; return 1 ; fi
+#
+##############################################################################
+: ${qobug:=n}    # enable debugs in qOption. need qbug=y to see them.
+qOption()
+{
+    # Low Level, don't call qEnter or qReturnOk
+
+    # CAUTION give unique names for all local variables in order to
+    # preserve ability to see local variables in call stack!
+
+    # Special support for debugging
+    local qbug="$qbug"  # so we can modify temporarily
+    if test "$qobug" = y ; then qbug=y ; fi  # so we see debug messages
+
+    shopt -s extglob     # Turn on extended features - should always be on!
+
+    # Arrays to hold <spec> info, all indexed by <key>
+    local -A qoaddarg_a=( )       # additional arg needed?
+    local -A qohavealt_a=( )      # alternate value in spec?
+    local -A qoaltvalue_a=( )     # value of altvalue if present
+    local -A qovarname_a=( )      # the variable name
+
+    # Options for our own behavior:
+    local qoignore=n            # dont stop on unmatched
+
+    # Get <speclist>
+    if test $# = 0 ; then qresult=0 ; return 0; fi       # sanity
+    local qospecs="$1" ; shift
+
+    # Remember where we started so we can return how many <arg> consumed
+    local qoargc_start="$#"
+
+    # Unpack the <speclist> into <spec>s
+    # Convert commas to spaces 
+    #was# and put protection for bash "for" command.
+    #was# The protection consists of single quotes around each spec that will 
+    #was#   have to be removed below.
+    qospecs=${qospecs//,/ }     # convert commas to spaces
+    qospecs=${qospecs//+( )/ }  # convert multiple spaces to one
+    qospecs=${qospecs## }       # remove leading spaces
+    qospecs=${qospecs%% }       # remove trailing spaces
+    #was# qospecs=${qospecs// /\' \') # make spaces be spaces
+    #was# qospecs=\'$qospecs\'        # provide leading/trailing quotes
+    local qospec
+    # Use bash to expand into words, but UGH this may run into 
+    # metacharacter problems if random characters are passed us...
+    # but that shouldnt happen at least for the option spec
+    for qospec in $qospecs ; do
+        #was# # Remove extra single quotes introduced above for protection
+        #was# qospec="${qospec#\'}"
+        #was# qospec="${qospec%\'}"
+        local qospec_original="$qospec"  # for diagnostics.
+        # Special values of <spec>
+        case "$qospec" in
+            QOIGNORE) 
+                test "$qobug" = y && qbug "Honoring QOIGNORE"
+                qoignore=y 
+            continue ;;
+        esac
+        # Parse the spec
+        local qoaddarg=n        # additional arg needed?
+        local qohavealt=n       # alternate value in spec?
+        local qoaltvalue=''     # value of altvalue if present
+        local qovarname=''      # the variable name
+        local qokey=''          # option key
+        case "$qospec" in
+            *=*) # inline arg for unvalued options
+                qohavealt=y
+                qoaddarg=n      # incompatible 
+                qoaltvalue=${qospec##+([^=])=}
+                qospec=${qospec%=+([^=])}
+            ;;
+            *'?')  # additional arg needed, for unvalued options
+                qoaddarg=y 
+                qhavealt=n  # incompatible
+                qospec=${qospec%?}      # remove last character
+            ;;
+        esac
+        case "$qospec" in
+            *:*) 
+                # Extra variable name fro the spec
+                qovarname=${qospec//+([^:]):}
+                qospec=${qospec//:+([^:])}
+            ;;
+        esac
+        qokey="$qospec"         # all that is left of the spec
+        if test -z "$qokey" ; then 
+            test "$qobug" = y && qbug
+            continue            # shouldnt happen?
+        fi
+        # Fix variable name
+        if test -z "$qovarname" ; then
+            qovarname="$qokey"  # variable name must be same as key
+        fi
+        # now we definitely have variable name, hopefully a good one
+        #  store into arrays
+        test "$qobug" = y && qbug "Remembering key $qokey from spec $qospec_original havealt=$qohavealt altvalue=$qoaltvalue varname=$qovarname"
+        qoaddarg_a["$qokey"]="$qoaddarg"
+        qohavealt_a["$qokey"]="$qohavealt"
+        qoaltvalue_a["$qokey"]="$qoaltvalue"
+        qovarname_a["$qokey"]="$qovarname"
+    done
+
+    # Now process the args
+    while test $# -gt 0 ; do
+        local qoarg="$1"
+        local qo_valued    # y for <key>=<value> else no
+        local qokey=''
+        local qovalue=''
+        test "$qobug" = y && qbug "Arg: Next arg: $qoarg"
+        # Which of the basic 3 classes of args?
+        case "$qoarg" in
+            =*) qo_valued=n     # an empty key doesn't count
+                # This is used as an "end of options" option.
+                test "$qobug" = y && qbug "Arg: Begins with = : $qoarg"
+                break   # terminate processing.
+            ;;
+            *=*) qo_valued=y
+                test "$qobug" = y && qbug "Arg: key=val form: $qoarg"
+            ;;
+            *) qo_valued=n
+                test "$qobug" = y && qbug "Arg: NOT key=val form: $qoarg"
+            ;;
+        esac
+        if test "$qo_valued" = y ; then
+            # here if arg is of form <key>=<value (<value may be empty)
+            qokey=${qoarg%%=*([^=])}
+            qovalue=${qoarg#*([^=])=}
+        else
+            qokey="$qoarg"   # make the entire argument be the key, w/ no value
+            qovalue=''
+        fi
+        # Find matching <spec>  (can check any array so long as result should be non-empty)
+        qokey="$qokey"
+        local qovarname=${qovarname_a["$qokey"]:-}
+        if test -z "$qovarname" ; then
+            test "$qobug" = y && qbug "Arg: key not found: $qoarg"
+            if test "$qoignore" = y ; then shift ; continue ; fi
+            test "$qobug" = y && qbug "Arg: aborting at: $qoarg"
+            break       # no match.. abort.. don't shift!
+        fi
+        # Here key is a match ... get rest of the spec for it
+        local qoaddarg=${qoaddarg_a["$qokey"]}
+        local qohavealt=${qohavealt_a["$qokey"]}
+        local qoaltvalue=${qoaltvalue_a["$qokey"]}
+        # Do we have a value?
+        if test "$qo_valued" = n ; then
+            if test "$qoaddarg" = y ; then
+                test "$qobug" = y && qbug "Arg: another arg needed for value: $qoarg"
+                shift           # eat the arg
+                qovalue=''
+                if test $# -gt 0 ; then
+                    qovalue="$1" ; shift
+                else
+                    test "$qobug" = y && qbug "Arg: another arg not found for: $qoarg"
+                fi
+            elif test "$qohavealt" = y ; then
+                shift           # eat the arg
+                qovalue="$qoaltvalue"
+            else
+                # NO value... abort
+                test "$qobug" = y && qbug "Arg: not value determined for: $qoarg"
+                if test "$qoignore" = y ; then shift ; continue ; fi
+                test "$qobug" = y && qbug "Arg: aborting at: $qoarg"
+                break   # don't shift
+            fi
+        else    # key=value
+            # we got the value already
+            shift           # eat the arg
+        fi
+        # Now store in location
+        test "$qobug" = y && qbug "Arg: storing value [$qovalue] in variable $qovarname at: $qoarg"
+        printf -v "$qovarname" "%s" "$qovalue"
+    done
+
+    # Return number of args consumed via qresult
+    local qoargc_end="$#"
+    local qoresult=$((qoargc_start - qoargc_end))
+    test "$qobug" = y && qbug "Returning nargs we ate: $qoresult"
+
+    # Never fail, just screw up?
+    qresult="$qoresult"
+    return 0
+}
+qOption_UnitTest()
+{
+    echo qOption TEST 1
+    qresult=''
+    local aa=1 bb=2 cc=3 dd=4
+    qOption '-ff:bb=5,aa?,cc,dodo:dd=why?' dodo -ff aa 7 cc=6 
+    echo "VALUES   qresult=$qresult aa=$aa bb=$bb cc=$cc dd=$dd"
+    if test "$qresult" = 5 && test "$aa" = 7 && test "$bb" = 5 && 
+                test "$cc" = 6 && test "$dd" = 'why?' ; then echo PASS
+    else echo FAIL ; fi 
+
+    echo qOption TEST 2
+    qresult=''
+    local aa=1 bb=2 cc=3 dd=4
+    qOption '-ff:bb' -ff
+    echo "VALUES   qresult=$qresult aa=$aa bb=$bb cc=$cc dd=$dd"
+    if test "$qresult" = 0 && test "$bb" = 2 ; then echo PASS
+    else echo FAIL ; fi 
+
+    echo qOption TEST 3
+    qresult=''
+    local aa=1 bb=2 cc=3 dd=4
+    qOption '-ff:bb?' -ff
+    echo "VALUES   qresult=$qresult aa=$aa bb=$bb cc=$cc dd=$dd"
+    if test "$qresult" = 1 && test "$bb" = ''  ; then echo PASS
+    else echo FAIL ; fi 
+
+    echo qOption TEST 4
+    qresult=''
+    local aa=1 bb=2 cc=3 dd=4
+    qOption 'QOIGNORE,-ff:bb?' BOGUS1 BOGUS2= BOGUS3=XX -ff WOW BOGUS4
+    echo "VALUES   qresult=$qresult aa=$aa bb=$bb cc=$cc dd=$dd"
+    if test "$qresult" = 6 && test "$bb" = 'WOW'  ; then echo PASS
+    else echo FAIL ; fi 
+
+    echo qOption TEST 5
+    qresult=''
+    local aa=1 bb=2 cc=3 dd=4
+    qOption 'o:aa,bb' o= bb=
+    echo "VALUES   qresult=$qresult aa=$aa bb=$bb cc=$cc dd=$dd"
+    if test "$qresult" = 2 && test "$aa" = '' && test "$bb" = '' ; then echo PASS
+    else echo FAIL ; fi 
+
+    echo
+    return 0
+}
+if test "$qUnitTest" = y ; then qOption_UnitTest ; fi
+
+
+
+##############################################################################
+# qSTransform <opt>... -- Transform input string to output, according to style.
+#       The transformation style is given by style=<style> and 
+#       other options may be appropriate depending on the style.
+#       All input/output options appropriate for all styles.
+#       With no input, the output will be empty.
+#       Conflicting options (e.g. v vs. r and i) are randomly resolved.
+#       Redundant occurrences of an option are resolved in favor of the last seen.
+#       Default input is empty string.
+#       Default output is to echo to stdout
+#
+#   Options appropriate for all styles:
+#       style=<style> -- type of transform to do
+#       v=<varname> -- variable name for input and output
+#       i=<varname> -- variable name for input
+#       s=<input>   -- input value
+#       r=<varname> -- variable name for output
+#   Options (appropriate according to style):
+#       t=<trimchars> -- additional to trim besides whitespace
+#           <trimchars> is treated as individual characters!
+#           Caution! <trimchars> must not contain character (sequences)
+#           not acceptable for bash pattern matching.
+#           Safe values include comma (,), semicolon (;)  and slash (/)
+# %%%%%%% TODO make all values of <trimchars> work
+# %%%%%%% TODO find a way to make replacing spaces optional
+#       sep=<separator> -- replacement for inside cleaning (inside=y)
+#           Caution! <sepstring> must not contain character (sequences)
+#           not acceptable for bash pattern replacement such as right brace.
+# %%%%%%% TODO make all values of <separator> work
+#
+#   Values for <style> :
+#   (default) -- no transformation, output is input
+#   trim -- remove leading/trailing whitespace (and other chars*)
+#       With t=<trimchars>, options, trim additional chars from ends besides
+#       just other characters (see cautions above).
+#   clean -- trim + merge multiple whitespace/<trimchars> into one space/<separator>
+#       Does a trim first (see above), then sequences of trim characters 
+#       inside the the string are replaced with a single space, or other
+#       string specified with sep=<separator>
+#   bashquote -- make string a single bash word, with single quotes,
+#       including proper quoting of single quotes.
+#       No options apply.
+#   unbaskquote -- remove bask quoting, Fails badly if not actually bash quoted.
+#
+##############################################################################
+qSTransform()
+{
+    # Use unique names so we don't hide the namespace of caller!!!!!
+
+    # Options:
+    local qq_style=''
+    local qq_v=''
+    local qq_i=''
+    local qq_s=''
+    local qq_r=''
+    local qq_t=''
+    local qq_sep=' '    # For inside replacement, default is a space
+    qOption "style:qq_style,v:qq_v,i:qq_i,s:qq_s,r:qq_r,sep:qq_sep,t:qq_t," "$@" 
+    shift $qresult
+    if test $# -gt 0 ; then 
+        qerror "Ignoring: $*" 
+        qbreakpoint
+    fi  # %%%%%% TODO
+    # Obtain the input. Ignore redundanat specification.
+    local qq_x=''       # our working value
+    if test -n "$qq_v" ; then
+        local -n qq_nameref="$qq_v"
+        qq_x="$qq_nameref"
+    elif test -n "$qq_i" ; then
+        local -n qq_nameref="$qq_i"
+        qq_x="$qq_nameref"
+    elif test -n "$qq_s" ; then
+        qq_x="$qq_s"
+    else
+        qq_x=''
+    fi
+    # Compute the result
+    case "$qq_style" in
+        trim)
+            shopt -s extglob     # Turn on extended features - should always be on!
+            qq_x=${qq_x##+([[:space:]$qq_t])}      # trim leading spaces
+            qq_x=${qq_x%%+([[:space:]$qq_t])}      # trim following spaces
+        ;;
+        clean)
+            shopt -s extglob     # Turn on extended features - should always be on!
+            qq_x=${qq_x##+([[:space:]$qq_t])}      # trim leading spaces
+            qq_x=${qq_x%%+([[:space:]$qq_t])}      # trim following spaces
+            qq_x=${qq_x//+([[:space:]$qq_t])/$qq_sep}    # merge internal spacing
+        ;;
+        bashquote)
+            # This makes a string not be interpreted, for bash source code.
+            shopt -s extglob     # Turn on extended features - should always be on!
+            qq_x=${qq_x//+(\')/\'\\\'\'}    # quote single quotes
+            qq_x=\'"$qq_x"\'            # add single quotes around it
+        ;;
+        unbashquote)
+            # This undoes bashquote. 
+            # Sadly, this can't really be done properly without a character by character
+            # state machine, which is grossly inefficient even by bash standards.
+            # But bash can do it nicely of course...
+            # TODO something more reliable (and efficient?)
+            # Use eval to force the unquoting and protect trailing space w/ X...Z
+            # Unfortunately, with set -e enabled, we have to take some steps to
+            # avoid dieing in case of malformed input.
+            # This we can do by first testing if it will die
+            # and only if it doesn't then doing it with assignment to qq_x
+            # (which apparently can't be otherwise protected).
+            ( eval echo X"$qq_x"Z ) >/dev/null  && 
+                qq_x=$(eval echo X"$qq_x"Z) 
+            # In case of failure, the output is likely the input... ?
+            # Now strip off the protecting X and Z
+            qq_x=${qq_x#X}    
+            qq_x=${qq_x%Z}    
+        ;;
+        *)      # unknown style
+            true        # ignore
+        ;;
+    esac  # style
+    # Store the result
+    if test -n "$qq_v" ; then
+        local -n qq_nameref="$qq_v"
+        qq_nameref="$qq_x"
+    elif test -n "$qq_r" ; then
+        local -n qq_nameref="$qq_r"
+        qq_nameref="$qq_x"
+    else
+        echo "$qq_x"
+    fi
+    return 0
+}
+
+
+##############################################################################
+# qSTrim <opt>... -- trim whitespace from ends of string.
+#       With options, trim additional chars from ends and replace
+#       sequences of trim characters inside the the string with a single
+#       space (or other string).
+#       See qSTransform style=trim 
+##############################################################################
+qSTrim()
+{
+    qSTransform style=trim "$@"
+}
+qSTrim_UnitTest()
+{
+    echo qSTrim_UnitTest 1
+    input="   THIS   NEEDS TRIMMING    "
+    should="THIS   NEEDS TRIMMING"
+    result="$input"
+    qSTrim v=result
+    echo "input=[$input]"
+    echo "should=[$should]"
+    echo "result=[$result]"
+    if test "$result" = "$should" ; then echo PASS ; else echo FAIL ; fi
+
+    echo qSTrim_UnitTest 2
+    input=" ,  THIS ,  NEEDS TRIMMING  ,  "
+    should="THIS ,  NEEDS TRIMMING"
+    result="$input"
+    copy="$input"
+    qSTrim i=copy r=result t=,
+    echo "input=[$input]"
+    echo "should=[$should]"
+    echo "result=[$result]"
+    if test "$result" = "$should" ; then echo PASS ; else echo FAIL ; fi
+
+    echo
+    return 0
+}
+if test "$qUnitTest" = y ; then qSTrim_UnitTest ; fi
+
+
+##############################################################################
+# qSClean <opt>... -- consolidate whitespace, trim whitespace from ends
+#       Options for adding to the list of trim characters and replacment chars.
+#       See qSTransform style=clean
+##############################################################################
+qSClean()
+{
+    qSTransform style=clean "$@"
+}
+qSClean_UnitTest()
+{
+    echo qSClean_UnitTest
+    input="    THIS   NEEDS CLEANING    "
+    should="THIS NEEDS CLEANING"
+    result="$input"
+    qSClean v=result
+    echo "input=[$input]"
+    echo "should=[$should]"
+    echo "result=[$result]"
+    if test "$result" = "$should" ; then echo PASS ; else echo FAIL ; fi
+
+    echo qSClean_UnitTest 3
+    input=" ,  THIS ,  NEEDS CLEANING  ,  "
+    should="THIS,NEEDS,CLEANING"
+    result="$input"
+    copy="$input"
+    qSClean i=copy r=result t=, sep=,
+    echo "input=[$input]"
+    echo "should=[$should]"
+    echo "result=[$result]"
+    if test "$result" = "$should" ; then echo PASS ; else echo FAIL ; fi
+
+    echo
+    return 0
+}
+if test "$qUnitTest" = y ; then qSClean_UnitTest ; fi
+
+##############################################################################
+# qSBashQuote <opt>... -- quote string with single quotes for bash,
+#       including quoting single quotes.
+#       No special options.
+#       See qSTransform style=bashquote
+##############################################################################
+qSBashQuote()
+{
+    qSTransform style=bashquote "$@"
+}
+qSBashQuote_UnitTest()
+{
+    echo qSBashQuote Unit Test 1
+    ##actual input:    >   $FOOBAR was   'H\'E\R"E'  <
+    local input='   $FOOBAR was   '\''H\'\''E\R"E'\''  '
+    local esc="'\''"
+    local pre="'"
+    local after="'"
+    ##actual input:    >   $FOOBAR was   'H\'E\R"E'  <
+    ##actual should:  >'   $FOOBAR was   '\''H\'\''E\R"E'\''  '<
+    local should=$pre'   $FOOBAR was   '$esc'H\'$esc'E\R"E'$esc'  '$after
+    local result="$input"
+    qSBashQuote v=result 
+    echo " input=[$input]"
+    echo "should=[$should]"
+    echo "result=[$result]"
+    if test "$result" = "$should" ; then echo PASS ; else echo FAIL ; fi
+
+    echo
+    return 0
+}
+if test "$qUnitTest" = y ; then qSBashQuote_UnitTest ; fi
+
+##############################################################################
+# qSUnBashQuote <opt>... -- undo bash quoting.
+#       No special options.
+#       Fails badly if input is not actually bash quoted.
+#       See qSTransform style=unbashquote
+##############################################################################
+qSUnBashQuote()
+{
+    qSTransform style=unbashquote "$@"
+}
+qSUnBashQuote_UnitTest()
+{
+    echo qSUnBashQuote Unit Test 1
+    # USE qSBashQuote to build someting quoted, then qSUnBashQuote
+    ##actual input:    >   $FOOBAR was   'H\'E\R"E'  <
+    local input='   $FOOBAR was   '\''H\'\''E\R"E'\''  '
+    local esc="'\''"
+    local pre="'"
+    local after="'"
+    ##actual input:    >   $FOOBAR was   'H\'E\R"E'  <
+    ##actual should:  >'   $FOOBAR was   '\''H\'\''E\R"E'\''  '<
+    local should=$pre'   $FOOBAR was   '$esc'H\'$esc'E\R"E'$esc'  '$after
+    local result="$input"
+    qSBashQuote v=result 
+    echo " input=[$input]"
+    echo "should=[$should]"
+    echo "result=[$result]"
+    if test "$result" = "$should" ; then echo qSBashQuote=PASS ; else echo qSBashQuote=FAIL ; fi
+    local result2="$result"
+    qSUnBashQuote v=result2 
+    echo "  input=[$input]"
+    echo "result2=[$result2]"
+    if test "$result2" = "$input" ; then echo PASS ; else echo FAIL ; fi
+
+    echo qSUnBashQuote Unit Test 2
+    local input="foo'foo"
+    local result=''
+    qSUnBashQuote r=result s="$input"
+    echo "result=[$result]"
+    echo That had malformed input, would be expected to do weird things.
+
+    echo qSUnBashQuote Unit Test 3
+    local input="foo'foo'"
+    local result=''
+    local should='foofoo'
+    qSUnBashQuote r=result s="$input"
+    echo "result=[$result]"
+    if test "$result" = "$should" ; then echo PASS ; else echo FAIL ; fi
+
+    echo
+    return 0
+}
+if test "$qUnitTest" = y ; then qSUnBashQuote_UnitTest ; fi
+
+
+
+##############################################################################
+# qSJoin [<opt>...] <arg>... -- join input strings together
+#   Options:
+#       =      -- terminate options, additional args are strings to join
+#       =a     -- terminate options, additional args are arrays to gather from
+#       =akeys -- terminate options, additional args are keys from arrays
+#       r=<varname> -- variable name for output (at end of processing)
+#       v=<varname> -- variable name for input and output
+#               Input is immediate, output at end of processing.
+#       i=<varname> -- variable name for input
+#       s=<input>   -- input value
+#       ia=<varname> -- input array values in bash order from array named <varname>
+#       iakeys=<varname> -- input the keys in bash order of array named <varname>
+#       sep=<sepstring> -- placed between succeeding outputs. Default, empty.
+#       prefix=<prefix>  -- placed before each output. Default, empty.
+#       suffix=<suffix>  -- placed after each output. Default, empty.
+#   Order of options can be important:
+#       -- Inputs are processed as soon as listed
+#       -- Attribute options apply to succeeding inputs.
+#   However, the last v or r option determines the output.
+#   Arguments that don't look like a valid option end option parsing and
+#   begin list of arguments to join.
+#   Default input is empty string.
+#   Default output is to echo to stdout
+##############################################################################
+qSJoin()
+{
+    local qq_sjoin_result=''  # final result
+    local qq_x=''       # temporary variable
+    local qq_once=n     # y if have processed one input
+    # Options:
+    local qq_r=''       # variable name for result
+    local qq_sep=''     # separator between joined strings
+    local qq_prefix=''  # placed before each addition
+    local qq_suffix=''  # placed after each addition
+    while test $# -gt 0 ; do
+        qOptionParse "$1"   # don't shift yet
+        case "$qokey" in
+            '') 
+                if test "$qovalue" = '=' ; then shift ; fi
+                break   # not an option
+            ;;
+            v)  # input varname
+                shift
+                qq_r="$qovalue"
+                local -n qq_nameref="$qovalue"
+                qq_x="$qq_nameref"
+                # fall thru
+            ;;
+            i)  # input varname
+                shift
+                local -n qq_nameref="$qovalue"
+                qq_x="$qq_nameref"
+                # fall thru
+            ;;
+            ia)  # input array varname
+                shift
+                local -n qq_nameref="$qovalue"
+                for qq_x in ${qq_nameref[@]} ; do
+                    if test "$qq_once" == y ; then qq_sjoin_result+="$qq_sep" ; fi
+                    qq_once=y ; qq_sjoin_result+="$qq_prefix""$qq_x""$qq_suffix"
+                done
+                continue
+            ;;
+            iakeys)  # input array (keys instead of values) varname
+                shift
+                local -n qq_nameref="$qovalue"
+                for qq_x in ${!qq_nameref[@]} ; do
+                    if test "$qq_once" == y ; then qq_sjoin_result+="$qq_sep" ; fi
+                    qq_once=y ; qq_sjoin_result+="$qq_prefix""$qq_x""$qq_suffix"
+                done
+                continue
+            ;;
+            s)  # input string
+                shift
+                qq_x="$qovalue"
+                # fall thru
+            ;;
+            r) # result variable name
+                shift
+                qq_r="$qovalue"
+                continue
+            ;;
+            sep) # separator between values
+                shift
+                qq_sep="$qovalue"
+                continue
+            ;;
+            prefix)  # prefix before values
+                shift
+                qq_prefix="$qovalue"
+                continue
+            ;;
+            suffix)  # suffix after values
+                shift
+                qq_suffix="$qovalue"
+                continue
+            ;;
+            *)   # unrecognized
+                # don't shift!
+                break
+            ;;
+        esac
+        # Here with a value to join in qq_x
+        if test "$qq_once" == y ; then qq_sjoin_result+="$qq_sep" ; fi
+        qq_once=y ; qq_sjoin_result+="$qq_prefix""$qq_x""$qq_suffix"
+    done
+    # Here with possibly unkeyed arguments which must be arrays to add
+    if test $# -gt 0 ; then
+        if test "$1" = '=a' ; then
+            shift
+            # arrays follow
+            while test $# -gt 0 ; do
+                local -n qq_nameref="$1"
+                for qq_x in "${qq_nameref[@]}" ; do
+                    if test "$qq_once" == y ; then qq_sjoin_result+="$qq_sep" ; fi
+                    qq_once=y ; qq_sjoin_result+="$qq_prefix""$qq_x""$qq_suffix"
+                done
+                shift ; continue
+            done
+        elif test "$1" = '=akeys' ; then
+            shift
+            # associative arrays follow, use the keys
+            while test $# -gt 0 ; do
+                local -n qq_nameref="$1"
+                for qq_x in "${!qq_nameref[@]}" ; do
+                    if test "$qq_once" == y ; then qq_sjoin_result+="$qq_sep" ; fi
+                    qq_once=y ; qq_sjoin_result+="$qq_prefix""$qq_x""$qq_suffix"
+                done
+                shift ; continue
+            done
+        else
+            if test "$1" = '=' ; then shift ; fi # optional argument protector
+            # Strings follow
+            while test $# -gt 0 ; do
+                qq_x="$1" ; shift
+                if test "$qq_once" == y ; then qq_sjoin_result+="$qq_sep" ; fi
+                qq_once=y ; qq_sjoin_result+="$qq_prefix""$qq_x""$qq_suffix"
+            done
+        fi
+    fi
+    # Store the result
+    if test -n "$qq_r" ; then
+        local -n qq_nameref="$qq_r"
+        qq_nameref="$qq_sjoin_result"
+    else
+        echo "$qq_sjoin_result"
+    fi
+    return 0
+}
+qSJoin_UnitTest()
+{
+    echo qSJoin Test 1
+    local -a ia=( zero one two )
+    ia[4]=four
+    local -A aa=( [foo]=bar )  # note: only one element for non-random expansion
+    local xx=XX
+    local result
+    local should='[XX],[zero],[one],[two],[four],[0],[1],[2],[4],[bar],[foo],[last],[args]'
+    qSJoin prefix='[' suffix=']' sep=, r=result i=xx ia=ia iakeys=ia ia=aa iakeys=aa s=last args
+    echo "should=$should"
+    echo "result=$result"
+    if test "$result" = "$should" ; then echo PASS ; else echo FAIL ; fi
+    
+    echo qSJoin Test 2
+    local -a ia=( zero one two )
+    ia[4]=four
+    local -A aa=( [foo]=bar )  # note: only one element for non-random expansion
+    local xx=XX
+    local result
+    local should='[XX],[zero],[one],[two],[four],[0],[1],[2],[4],[bar],[foo],[zero],[one],[two],[four]'
+    qSJoin prefix='[' suffix=']' sep=, r=result i=xx ia=ia iakeys=ia ia=aa iakeys=aa =a ia
+    echo "should=$should"
+    echo "result=$result"
+    if test "$result" = "$should" ; then echo PASS ; else echo FAIL ; fi
+    
+    echo
+    return 0
+}
+if test "$qUnitTest" = y ; then qSJoin_UnitTest ; fi
+
+
+##############################################################################
+# qSListAnd <string>...   -- find words present in all input strings
+#       Order of words in first argument is preserved.
+#       A word is a sequence of non-blank characters, separated by blank(s).
+#       NOTE!!!: all strings must NOT contain bash special characters.
+#       Return result via qresult.
+#       Return status always 0.
+##############################################################################
+qSListAnd()
+{
+    # UGH, this is ineffient, but I don't know how to make it better
+    qresult=''
+    if test $# = 0 ; then return 0 ; fi
+    local last="$1" ; shift
+    while test $# -gt 0 ;  do
+        local this="$1" ; shift
+        local next=''
+        # Keep order of "last"
+        local lastword
+        for lastword in $last ; do
+            local thisword
+            for thisword in $this ; do
+                if test $lastword = $thisword ; then
+                    next+=" $lastword"
+                    continue 2
+                fi
+            done
+        done
+        last="$next"
+    done
+    qSClean v=last
+    qresult="$last"
+    return 0
+}
+
+
+
+##############################################################################
+# qAGather <opt>... <arg>...  -- collect strings into sequentially indexed array.
+#       Strings may be from various sources.
+#       Order is preserved as much as possible (not possible for bash
+#       associative arrays).
+#   Options:
+#       =      -- terminate options, additional args are strings to gather
+#       =a     -- terminate options, additional args are arrays to gather from
+#       =akeys -- terminate options, additional args are keys from arrays
+#       ra=<varname> -- variable name for output (at end of processing)
+#       va=<varname> -- variable name for input and output
+#               Input is immediate, output at end of processing.
+#       i=<varname> -- variable name (string) for input
+#       ia=<varname> -- variable name (array) for input
+#       s=<input>   -- input value
+#   Order of options can be important:
+#       -- Inputs are processed as soon as listed
+#       -- Attribute options apply to succeeding inputs.
+#   However, the last v or r option determines the output.
+#   Arguments that don't look like a valid option end option parsing and
+#   begin list of arguments to join.
+#   With no input, output is empty array.
+#   No default output.
+##############################################################################
+qAGather()
+{
+    local qq_ra=''       # variable name for result
+    local -a qq_agather_result=( )  # final result
+    while test $# -gt 0 ; do
+        qOptionParse "$1"   # don't shift yet
+        case "$qokey" in
+            '') 
+                if test "$qovalue" = '=' ; then shift ; fi
+                break   # not an option
+            ;;
+            va)  # input varname
+                qq_ra="$qovalue"
+                local -n qq_nameref="$qovalue"
+                qq_agather_result+=( "${qq_nameref[@]}" )
+                shift ; continue
+            ;;
+            i)  # input varname
+                local -n qq_nameref="$qovalue"
+                qq_agather_result+=( "$qq_nameref" )
+                shift ; continue
+            ;;
+            ia)  # input array varname
+                local -n qq_nameref="$qovalue"
+                qq_agather_result+=( "${qq_nameref[@]}" )
+                shift ; continue
+            ;;
+            iakeys)  # input array (keys instead of values) varname
+                local -n qq_nameref="$qovalue"
+                qq_agather_result+=( "${!qq_nameref[@]}" )
+                shift ; continue
+            ;;
+            s)  # input string
+                qq_agather_result+=( "$qovalue" )
+                shift ; continue
+            ;;
+            ra)
+                qq_ra="$qovalue"
+                shift ; continue
+            ;;
+            *)   # unrecognized
+                # don't shift!
+                break
+            ;;
+        esac
+    done
+    # Here with possibly unkeyed arguments which must be arrays to add
+    if test $# -gt 0 ; then
+        if test "$1" = '=a' ; then
+            shift
+            # arrays follow
+            while test $# -gt 0 ; do
+                local -n qq_nameref="$1"
+                qq_agather_result+=( "${qq_nameref[@]}" )
+                shift ; continue
+            done
+        elif test "$1" = '=akeys' ; then
+            shift
+            # associative arrays follow, use the keys
+            while test $# -gt 0 ; do
+                local -n qq_nameref="$1"
+                qq_agather_result+=( "${!qq_nameref[@]}" )
+                shift ; continue
+            done
+        else
+            if test "$1" = '=' ; then shift ; fi # optional argument protector
+            # Strings follow
+            while test $# -gt 0 ; do
+                qq_agather_result+=( "$1" )
+                shift ; continue
+            done
+        fi
+    fi
+    # Store the result
+    if test -n "$qq_ra" ; then
+        local -n qq_nameref="$qq_ra"
+        qq_nameref=( "${qq_agather_result[@]}" )
+    else
+        true    # error...  no output
+    fi
+    return 0
+}
+qAGather_UnitTest()
+{
+    echo qAGather Test 1
+    local -a ia=( zero one two )
+    ia[4]=four
+    local -A aa=( [foo]=bar )  # note: only one element for non-random expansion
+    local xx=XX
+    local result
+    local -a temp
+    local should='[XX],[zero],[one],[two],[four],[0],[1],[2],[4],[bar],[foo],[last],[args]'
+    qAGather ra=temp i=xx ia=ia iakeys=ia ia=aa iakeys=aa s=last args
+    qSJoin prefix='[' suffix=']' sep=, r=result ia=temp
+    echo "should=$should"
+    echo "result=$result"
+    if test "$result" = "$should" ; then echo PASS ; else echo FAIL ; fi
+    
+    echo qAGather Test 2
+    local -a ia=( zero one two )
+    ia[4]=four
+    local -A aa=( [foo]=bar )  # note: only one element for non-random expansion
+    local xx=XX
+    local result=''
+    local -a temp=( FOO: )
+    local should='[FOO:],[XX],[zero],[one],[two],[four],[0],[1],[2],[4],[bar],[foo],[zero],[one],[two],[four]'
+    qAGather va=temp i=xx ia=ia iakeys=ia ia=aa iakeys=aa =a ia
+    qSJoin prefix='[' suffix=']' sep=, r=result ia=temp
+    echo "should=$should"
+    echo "result=$result"
+    if test "$result" = "$should" ; then echo PASS ; else echo FAIL ; fi
+    
+
+    echo
+    return 0
+}
+if test "$qUnitTest" = y ; then qAGather_UnitTest ; fi
+
+
+##############################################################################
+# qAIterate -- perform a command on every element of an array
+#       UNIMPLIMENTED, since this is so easily done in bash:
+#               local key
+#               for key in "${!myarray[@]}" ; do
+#                   do-something-to ${myarray[$key]}
+#               done
+##############################################################################
+
+
+##############################################################################
+# qVarRead [r=<output-varname>] <varname> -- safely read a variable by name.
+#       Well, safety is relative; but this catches some important failures.
+#
+#       Options are:
+#               r=<output-varname>  -- save result via output-varname
+#               fail={y|n}  -- if y, return 1 on error (default is n)
+#
+#       Return status:
+#               By default, always 0
+#               with fail=y, nonzero if a failure, else 0
+#
+#       Return value is the value read from <varname>
+#               Is returned via <output-varname>, or by qresult.
+#
+#       On failure, qresult is null and <output-varname>, if given, 
+#       may or may not have the correct result.
+#
+#       Fails if <varname> is not valid for a variable name, or if
+#       no variable by that name is "set" ... variables are set when 
+#       assigned a value, but can also be unset.
+#       May also fail if <output-name> is not a legal variable name.
+#
+#       For arrays, the (constant) subscript is part of the name,
+#               e.g. a[1] is a valid name but a[$n] is not.
+#       All should well if you call qVarRead as:
+#               qVarRead "a[$n]" 
+#       instead of 
+#               qVarRead 'a[$n]'
+#       provided of course that $n evaluates appropriately.
+#
+#       Typical usage:
+#               local myresult='some default'
+#               qVarRead r=myresult varname
+#       Where more error checking is needed:
+#               if ! qVarRead fail=y varname ; then return error ; fi
+#               qResult myresult
+#       The following does a little less checking but may be preferred:
+#               local myresult='some default'
+#               if ! test -v "$varname" ; then  return error ; fi
+#               qVarRead varname ; myresult="$qresult"
+##############################################################################
+qVarRead()
+{
+    qresult=''    # ensure empty output is the default
+    local qVarRead_outvarname=''        # where to output
+    local qVarRead_fail=''              # fail on error?
+    local qVarRead_failed=n             # did we fail?
+    local qVarRead_result=''            # our result
+    while test $# -gt 0 ; do
+        case "$1" in 
+            r=*) 
+                qVarRead_outvarname=${1#r=}
+                shift
+            ;;
+            fail=*)
+                qVarRead_fail=${1#fail=}
+            ;;
+            *=*) 
+                qVarRead_failed=y
+                shift           # keep going and hope for the best
+            ;;
+            *)
+                break
+            ;;
+        esac
+    done
+    local qVarRead_varname="${1:-}"      # Name of variable (default no name)
+    # "test -v" will fail if $varname is an invalid variable name
+    # or if the variable is not "set" meaning it has never been assigned
+    # a value... something of a test of existence.
+    if test -v "$qVarRead_varname" ; then
+        qVarRead_result="${!qVarRead_varname}"
+    else
+        qVarRead_failed=y
+    fi
+    # Return result via output variable name
+    if ! test -z "$qVarRead_outvarname" ; then
+        if ! printf -v "$qVarRead_outvarname" "$s" "$qVarRead_result" ; then
+            qVarRead_failed=y
+        fi
+    else
+        # Return result via qresult
+        qresult="$qVarRead_result"
+    fi
+    if test "$qVarRead_fail" = y ; then
+        if test "$qVarRead_failed" = y ; then
+            return 1
+        fi
+    fi
+    return 0
+}
+
+
+
+##############################################################################
+# qCallDepthMake -- generate a string for diagnostics showing call depth
+#       Return result is in global variable qcdepth
+##############################################################################
+qcdepth=''
+qCallDepthMake()
+{
+    # Low level function, do NOT use qEnter
+
+    # CAUTION give unique names for all local variables in order to
+    # preserve ability to see local variables in call stack!
+
+    qcdepth=''
+    local qcdm_depth
+    for qcdm_depth in ${!BASH_SOURCE[@]} ; do
+        qcdepth+='+'
+    done
+
+    # Low level function, do NOT use qReturnOk
+    return 0
+}
+
+##############################################################################
+# qEnter -- put at top of function body to do standard function entry
+#       Clears qresult.
+#       Conditional on qbug, command and args are displayed
+##############################################################################
+qEnter()
+{
+    # Low level function, do NOT call qEnter or qReturnOk
+    # CAUTION give unique names for all local variables in order to
+    # preserve ability to see local variables in call stack!
+
+    qresult=''        # clear output result, just in case
+    local qenter_fncname=${FUNCNAME[1]}  # 1 for caller function name
+    if test "$qbug" = y ; then
+        qCallDepthMake ; local qenter_depthmsg="$qcdepth"
+        qDiagnostic Enter "$qenter_depthmsg" "$qenter_fncname" "$*"
+    fi
+    test "$qbpq" = y && qbreakpoint  # possible breakpoint
+    return 0
+}
+
+
+##############################################################################
+# qReturnOk [<result>] -- save return result in qresult. Returns 0 status.
+#       If no <result> passed, then qresult is set to the empty string.
+#       To pass a previous result, do it explicitly!
+#
+#       Use as: 
+#               qReturnOk result-value ; return 0
+#
+#       BE SURE to call: return 0
+#       immediately after calling this... sorry, there is no way to do that
+#       automatically.
+#
+#       Tests qbug for diagnotic message.
+##############################################################################
+qReturnOk()
+{
+    # Low level function, do NOT call qEnter or qReturnOk
+    # CAUTION give unique names for all local variables in order to
+    # preserve ability to see local variables in call stack!
+
+    if test "$qbug" = y ; then
+        qCallDepthMake ; local depthmsg="$qcdepth"
+        qDiagnostic DoneOk "$depthmsg $*"
+    fi
+    qresult="$*"      # set result
+    test "$qbpq" = y && qbreakpoint  # possible breakpoint
+    return 0
+}
+
+
+##############################################################################
+# qReturnFail [<msg>] -- Clear qresult, return 0.
+#       Tests qerror. Args are for diagnostic message.
+#       Use as: qReturnFail message ; return 1
+#
+#       BE SURE to call: return 1
+#       immediately after calling this... sorry, there is no way to do that
+#       automatically.
+#
+#       NOTE: It is allowed to pass a result anyway:
+#               qReturnFail mymsg  ; qresult=myvalue ; return 1
+##############################################################################
+qReturnFail()
+{
+    # Low level function, do NOT call qEnter or qReturnOk
+    # CAUTION give unique names for all local variables in order to
+    # preserve ability to see local variables in call stack!
+
+    if test "$qerror" = y ; then
+        qCallDepthMake ; local depthmsg="$qcdepth"
+        qDiagnostic FAIL "$depthmsg $*"
+    fi
+    qresult=''    # clear global variable holding result, for consistency
+    test "$qbpq" = y && qbreakpoint  # possible breakpoint
+    return 0
+}
+
+
+##############################################################################
+# qResult [<varname>] - 
+#               Returns or echoes the value of qresult as set with qReturnOk.
+#
+#       With <varname>, the value is placed into the variable named <varname>.
+#       and qresult is cleared for future sanity.
+#       Adds debugging (when qbug is 'y').
+#       Use as:  qResult myvar
+#
+#       With no argument, echoes $qresult to stdout.
+#       Use as:  foo="$(qResult)"  -- immediately after call that sets it!
+#       This is functionally the same as foo="$qresult"
+#       but adds debugging (when qbug is 'y').
+#       Clearing of qresult does not work because $(qResult) runs in
+#       a child process, and clearing qresult here has no practical effect.
+#
+# Notes:
+#       The use of qrun -r<varname> is generally preferred to this.
+##############################################################################
+qResult()
+{
+    # Low level function, do NOT call qEnter or qReturnOk
+    # CAUTION give unique names for all local variables in order to
+    # preserve ability to see local variables in call stack!
+
+    local qr_result="$qresult"     # get the global/inherited result value
+    local qr_msg="$qr_result"      # for diagnostics
+    if test -z "$qr_msg" ; then qr_msg='(EmptyResult)' ; fi
+    if test "$qbug" = y ; then
+        qDiagnostic Result "$qr_msg"
+    fi
+    qresult=''     # NOTE doesn't work from child process, e.g. $(qResult)
+    if test -n "${1:-}" ; then  # variable name passed
+        printf -v "$1" "%s" "$qr_result"
+    else
+        echo "$qr_result"
+    fi
+    return 0
+}
+
+
+
+##############################################################################
+# qrun [<option>]... [<cmd> <arg>...]   -- run a simple command with retries/logging
+#       If command exits with non-zero (error) status, it is retried
+#       until the maximum tries is reached (default only once)
+#       The command is always executed at least once; default n. of retries is 0
+#       The execution of the command is presented as a status or debug message.
+#       The command is not executed at all if qdryrun is y.
+#       A missing or empty command does nothing successfully.
+#       Otherwise the return status is the return status of the command.
+#       If r=<varname> is provided, returns result (qresult) via <varname>
+#       and clears qresult for sanity.
+#
+#       This is basically just
+#               "$@"
+#       but adds debugging, retries, qresult return to variable, and other
+#       features.
+#
+#       qrun is particularly appropriate for commmands that have system impact 
+#       and thus we should be verbose about, or where retries are needed.
+#
+#       <option> can be:
+#            =   -- just an equal sign to terminate options 
+#                   Useful if first word of command might have an equal sign in it.
+#            r=<varname> -- return result ($qresult) into $varname (if successful).
+#            p={y|n}   -- y to print output of qrun to stdout 
+#                       instead of returning via result.
+#            retries=<nretries>  -- how many retries (integer)
+#            diag={quser|qbug}  -- where to send diagnostics (default qbug)
+#            read={y|n}   -- y to run cmd in subshell and read it's output 
+#                               (instead of it returning result via qresult)
+#       <cmd> with <arg>... are executed as a simple command
+#       Return is 0 if successful (perhaps due to retries),
+#               1 if unsuccessful.
+#       Return value via qresult (or to stdout with p=y).
+#
+# Notes: r= and p= should probably not both be used together ???
+##############################################################################
+qrun()
+{
+    qEnter "$@"  # our standard way to begin a function
+    # CAUTION! BECAUSE we offer the option to store the result via a variable name,
+    # we MUST be extra careful to avoid any shadowing of a variable name by a local
+    # variable!!!!!!! Thus all local variables here are named in a unique way
+    # by beginning with qrun_  .
+    local qrun_result=''     # our output
+
+    # Get options
+    local qrun_options=''
+    local qrun_varname='' ; qrun_options+='r:qrun_varname,'
+    local qrun_retries=0  ; qrun_options+='retries:qrun_retries,'
+    local qrun_statusfnc=qbug ; qrun_options+='diag:qrun_statusfnc,'   # Default, not verbose
+    local qrun_read=n ; qrun_options+='read:qrun_read,'    # y to read stdout of the command 
+    local qrun_p=n ; qrun_options+='p:qrun_p'     # y to write result to stdout
+    qOption "$qrun_options" "$@"  ; shift $qresult
+
+    # Option sanity checks
+    if test "$qrun_varname" = y && test "$qrun_p" = y ; then
+        qrunFail "Incompatible output options" ; return 1
+    fi
+    # Optional sanity check on qrun_statusfnc
+    #   we should probably trust anything given us... ?
+    case "$qrun_statusfnc" in
+        'qbug') true ;;
+        'quser') true ;;
+        *)  #
+            qerror "Ignoring unsupported diag type: $qrun_statusfnc"
+            qrun_statusfnc='qbug'   # fix bad input
+        ;;
+    esac
+
+    # Retry loop:
+    local qrun_maxtries=$((qrun_retries + 1))
+    local qrun_tries=1
+    while true ; do
+        if test "$qdryrun" = y ; then     # for debugging
+            $qrun_statusfnc "PRETENDING WE EXECUTED: $*"
+            break
+        fi
+        if test "$qrun_maxtries" -gt 1 ; then
+            $qrun_statusfnc "Try $qrun_tries/$qrun_maxtries for: $*"
+        else
+            $qrun_statusfnc "::: $*"
+        fi
+        if test "$qrun_read" = y ; then
+            # Here we run the command and read it's stdout
+            # It is run in subshell which has some issues... not recommended?
+            qrun_result=$( $@ )
+            if test "$?" = 0 ; then
+                break
+            fi
+        else
+            # Here we run the command directly, with return value by qresult
+            if "$@" ; then
+                qResult qrun_result
+                break
+            fi
+        fi
+        # Here on failure
+        if test $qrun_tries -ge $qrun_maxtries  ; then
+            if test "$qrun_maxtries" -gt 1 ; then
+                qReturnFail "Too many retries for: $*"
+            else
+                qReturnFail "Command failed: $*"
+            fi
+            return 1
+        fi
+        $qrun_statusfnc "Will RETRY. Did $qrun_tries/$qrun_maxtries tries for: $*"
+        qrun_tries=$(($qrun_tries+1))
+    done
+    qbug "Finished OK: $*"
+
+    if test -n "$qrun_varname" ; then 
+        qbug "Storing RESULT in variable r=$qrun_varname : $qrun_result"
+        printf -v $qrun_varname "%s" "$qrun_result" 
+        qrun_result=''
+    elif test "$qrun_p" = y ; then 
+        qbug "Echoing RESULT : $qrun_result"
+        echo "$qrun_result" 
+        qrun_result=''
+    fi
+    if test -n "$qrun_result" ; then 
+        qbug "Returning non-empty qresult : $qrun_result"
+    fi
+    qReturnOk "$qrun_result" ; return 0
+}
+# Unit test for qrun, qReturnOk, qReturnFail, qResult, 
+#       quser, qbug, qerror etc.
+qrun_UnitTest()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local qbug=y   # hide global for this test
+    local result=''
+    quser "TURNED ON DEBUGS ON FOR THIS TEST"
+    qbug "JUST A TEST of qbug"
+    qerror "JUST A TEST of qerror, not an actual error!"
+    quser "TEST1 -- jog due to added timestamp"
+    result='badnews'
+    qbug=y qDiagnosticsHaveTimeStamp=y qrun read=y echo test1
+    qResult result
+    if test "$result" = "test1" ; then
+        quser "TEST1 passed"
+    else quser "TEST1 failed"
+    fi
+    result='badnews'
+
+    quser "Test2"
+    result='badnews'
+    qbug=y qrun r=result read=y echo test2
+    if test "$result" = "test2" ; then
+        quser "Test2 passed"
+    else quser "Test2 failed"
+    fi
+    result='badnews'
+
+    quser "Test3 -- this should FAIL!"
+    if ! qrun false ; then
+        quser "Test3 passed --- command false should fail"
+    else
+        quser "Test3 failed --- command false should fail"
+    fi
+    
+    qReturnOk "Unit Test DONE"
+    return 0
+}
+if test "$qUnitTest" = y ; then qrun_UnitTest ; fi
+
+
+##############################################################################
+# qEval [<arg>]...     pass args to bash eval, this just adds debugging
+#       Does qEnter/qReturnFail/qReturnOk
+#       Status is return status from bash eval.
+#       Return result via qresult is null.
+#
+# NOTE that bash eval does not present itself on the call stack trace!
+# ALSO, the line number on the traceback for qEval somehow shoes up
+# as "1" instead of the correct number... a bug in bash, how could that be?
+##############################################################################
+qEval()
+{
+    qEnter "$@"
+    local qEval_status=0
+    # NOTE: even "if" messes with $? so do it this way...
+    eval "$@" || { qEval_status=$? ; }
+    if ! test "$qEval_status" = 0 ; then
+        qReturnFail "FAILURE (status $qEval_status) : $*"
+        return "$qEval_status"
+    fi
+    qReturnOk
+    return 0
+}
+
+
+
+
+##############################################################################
+# qUserPrompt [<opt>]...     -- generate a prompt to use for user input request
+#   Returns result via qresult; to actually print to user, use -print option.
+#   Options are (leading hyphen optional):
+#       promptshow={user|pipe|result}   -- where to put prompt
+#               user - output to user (stderr), no return result  (the default)
+#               pipe  -- output to stdout for e.g. using for $(qUserPrompt)
+#               result  -- return via qresult
+#               none   -- do not produce a prompt. Overrides other options.
+#       promptbase=<string>  -- base part of the prompt
+#               If <string> is empty then no base part is used.
+#               If this option is missing, a default prompt is used.
+#       defaultvalue=<string> -- if non-empty, the string is included
+#               in the result to tell the user what the default or
+#               suggested value is.
+#       prettyprompt={y|n} -- prettify the result. The default is $qprettyprompt.
+#
+#   Features:
+#           Provide a default prompt or use passed prompt base value (-prompt).
+#           Optionally add indication of default value (see -default).
+#           Prettify the result (see notes for -pretty).
+#           Output, the first of:
+#               Emit result to user on stderr
+#                       If $quserreadok is not y this will produce error instead.
+#               Emit result to stdout for use with e.g. $(qUserPrompt...)
+#               Return result via qresult.
+#
+#   Prettyify means to add escape sequences to invoke "terminal" attributes 
+#   (underline, bold, etc.)
+#
+# Examples:
+#    Print a prompt to the user, if allowed, else error:
+#       if ! qUserPrompt promptbase="myprompt" ; then qReturnFail ; return 1 ; fi
+#    Get a prompt string via qresult:
+#       local foo
+#       qcall foo qUserPrompt promptshow=result promptbase="myprompt"
+#    Get a prompt string via pipe:
+#       local foo=$(qUserPrompt promptshow=pipe promptbase="myprompt")  
+#      
+# Note: Called from, and shares options with qUserRead.
+##############################################################################
+qUserPrompt()
+{
+    qEnter "$@"  # our standard way to begin a function
+
+    # Get options
+    local promptshow=''
+    local promptbase=''     # base part of prompt to create
+    local defaultvalue=''       # default value to include into prompt
+    local prettyprompt="$qprettyprompt"    # should we use terminal display attributes
+    qOption 'promptshow,promptbase,defaultvalue,prettyprompt' "$@"
+    shift $qresult
+    if test $# -gt 0 ; then qReturnFail "Invalid args at: $*" ; return 1 ; fi
+
+    # Massages output option
+    local douser="$quserreadok"      # do output to stderr (for user, see $greaduserok)
+    local dopipe=n      # do output to stdout (as a return method)
+    case "$promptshow" in 
+        '') true ;;     # use defaults
+        user) douser=y ; dopipe=n ;;
+        pipe) douser=n ; dopipe=y ;;
+        result) douser=n ; dopipe=n ;;
+        none) qReturnOk ; return 0 ;;
+        *) qerror "Ignoring invalid value for promptshow=$promptshow" ;;
+    esac
+
+    # Build up the prompt
+    local prefix=''     # set attributes
+    local dprefix=''    # prefix for default value
+    local suffix=''     # cancel attributes
+    if test -z "$promptbase" ; then promptbase="Enter Answer :" ; fi
+    if test "$qprettyprompt" = y ; then
+        prefix="$qPretty_underline"
+        suffix="$qPretty_off"
+    fi
+    local defaultshow=''        # how we display the default
+    if test -n "$defaultvalue" ; then
+        defaultshow="[$defaultvalue]"
+        if test "$qprettyprompt" = y ; then
+            dprefix="$qPretty_off $qPretty_bold"
+        fi
+    fi
+    local result
+    printf -v result "$prefix%s$dprefix%s$suffix " "$promptbase" "$defaultshow"
+
+    # Display the results
+    if test "$douser" = y ; then
+        qprintf "%s" "$result" 
+        result=''  # one result only
+        if test "$qbp" = y ; then 
+            qprintf "\n%s\n" "$qPretty_magenta""qbp: WARNING, JUST PRINTED A PROMPT!""$qPretty_off"
+        fi
+    fi
+
+    # Return the results
+    if test "$dopipe" = y ; then
+        echo "$result"
+        result=''   # one result only
+    fi
+    qReturnOk "$result" ; return 0
+}
+
+
+##############################################################################
+# qUserRead [<arg>...]  - read user input, return via qresult.
+#       For list of arguments, see qUserPrompt.
+#       If the user enters an empty input then default is returned instead,
+#       if provided in the arguments, see args for qUserPrompt.
+#
+#       Fails and returns nonzero status if bash read returns nonzero...
+#       e.g. end of file signal, or interrupt.
+#       Also fails and returns nonzero status if quserreadok is not 'y'.
+#      
+# Typically used with qrun, e.g. :   qrun r=<varname> qUserRead <prompt> 
+##############################################################################
+qUserRead()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local result
+
+    if test "$quserreadok" != y ; then 
+        qReturnFail "User input disabled!" ; return 1
+    fi
+
+    # Print prompt using passed parameters, but override destination
+    # (Note promptshow=none is not overridden).
+    if ! qUserPrompt "$@" promptshow=user ; then   # print prompt using arguments
+        qReturnFail ; return 1
+    fi
+
+    # Get options. Ignore options for qUserPrompt.
+    local defaultvalue=''
+    qOption 'QOIGNORE,defaultvalue' "$@" ; shift $qresult
+    local status=0
+    read result || { status=$? ; }
+    if test "$status" != 0 ; then
+        qprint   # newline to avoid jumbled text
+        qReturnFail "Error $status reading user input" ; return 1
+    fi
+    if test -z "$result" && test -n "$defaultvalue" ; then
+        result="$defaultvalue"  ; fi
+    qReturnOk "$result" ; return 0
+}
+
+
+##############################################################################
+# qFileFind <pattern>...  -- match shell file pattern with possible empty result
+#               WARNING when calling, quote metacharacters!
+#       This fixes the default shell behavior of empty results leading
+#       to the pattern (e.g. with asterisks)  being simply returned as if it was valid.
+#       Result returned via qresult
+#       BUG: as usual, whitespace in a filename is disaster.
+#
+#       Return status is always 0
+##############################################################################
+qFileFind()
+{
+    qEnter "$@"  # our standard way to begin a function
+    # NOTE: bash nullglob is not sufficient
+    local result=''
+    local match=$(echo $@)
+    for f in $match ; do
+        if test -e "$f" || test -L "$f" ; then
+            if test -z "$result" ; then result="$f"
+            else result="$result $f"
+            fi
+        fi
+    done
+    qReturnOk "$result" ; return 0
+}
+
+
+
+##############################################################################
+# Q BREAKPOINT HANDLING STATE
+# Breakpoints are wherever there is a call to qbreakpoint (see below).
+# It is not possible to put breakpoints at arbitrary source lines
+# (actually, it could be possible using trap DEBUG but that is not 
+# implemented here).
+#
+# The call stack (provided by bash internal variables) is formatted into
+# a "breakpath" name, consisting of [/<fnc>:<line>] concatenated together,
+# starting with the most recent (omitting qbreakpoint itself).
+# NOTE: we assume that functions have unique names.
+#
+# Also we create a "breakpoint" name that is just <fnc>:<line> of the
+# caller of qbreakpoint. 
+#
+# These two names are stored in respective tables. 
+# 
+### Breakpoint data:
+qbpoint_isinit=n        # y if we are ready to go
+declare -A qbpoint_lookup=( )   # convert breakpoint into table index
+declare -a qbpoint_reverse=( )  # convert table index into breakpoint
+declare -a qbpoint_table=( )    # per breakpoint index, command to use
+qbpoint_inext=0         # next index to use for breakpoint table additions
+qbpoint_ilatest=0       # last breakpoint table index hit by qbreakpoint
+### Breakpath data. Must be initialized in qStart.
+qbreakpath_base=''         # our breakpath at qStart, which we can chop off
+# TODO use qbreakpath_base to shorten reported breakpaths
+declare -A qbpath_lookup=( )   # convert breakpath into table index
+declare -a qbpath_reverse=( )  # convert table index into breakpath
+declare -a qbpath_table=( )    # per breakpath index, command to use
+qbpath_inext=0         # next index to use for breakpath table additions
+qbpath_ilatest=0       # last breakpath table index hit by qbreakpoint
+
+
+##############################################################################
+# qBackTrace [<opt>].. -- format a backtrace
+#               Result is returned via special global variable: qbt_result
+#       Options are:
+#               prefix=<string>  -- print string at begin of each line
+#               style={short|long|bpath|bpoint}   
+#                       long  -- multiline for user information
+#                       short -- compressed single line for user info
+#                       bpath -- "standard" breakpath form
+#                       point -- "standard" breakpoint form,
+#                               does only the first layer (see start=)
+#               chop=<bpath> -- chop off <bpath> from result, if present.
+#                       This is useful for style=bpath.
+#               start=<n>  -- start at call depth <n>
+# Note: this is independent of breakpoints or anything else.
+# You could even call this (for debugging) from somewhere in your program.
+#
+##############################################################################
+qbt_result=''   # return from qBackTrace here
+# Possible upgrade: Would be nice to print breakpoint status when style=long form
+qBackTrace()
+{
+    # Low level function, do NOT call qEnter or qReturnOk
+    # CAUTION give unique names for all local variables in order to
+    # preserve ability to see local variables in call stack!
+
+    # Get options
+    local qbt_options=''
+    local qbt_style="long" ; qbt_options+='style:qbt_style,'
+    local qbt_start=1  ; qbt_options+='start:qbt_start,'   # where we start in the backtrace
+    local qbt_prefix=''  ; qbt_options+='prefix:qbt_prefix,'
+    local qbt_chop='' ; qbt_options+='chop:qbt_chop,'
+    qOption "$qbt_options" "$@" ; shift $qresult
+    if test $# -gt 0 ; then qerror "Ignoring invalid args: $*" ; fi
+
+    # Format the result
+    local qbt_temp      # temporary holding space
+
+    # Overall Prefix
+    qbt_result=''       # start with empty result
+    case "$qbt_style" in
+        short)
+            if test -n "$qbt_prefix" ; then 
+                printf -v qbt_temp "%s " "$qbt_prefix" 
+                qbt_result+="$qbt_temp"
+            fi
+        ;;
+    esac
+
+    # Per callback level...
+    local qbt_depth
+    for qbt_depth in ${!FUNCNAME[@]} ; do
+        local qbt_linenum
+        # Skip first ones as directed:
+        if test $qbt_depth -lt "$qbt_start" ; then
+            continue
+        fi
+        # Get the data for the callback level
+        if test $qbt_depth = 0 ; then
+            qbt_linenum=$LINENO
+        else
+            qbt_linenum=${BASH_LINENO[$(($qbt_depth-1))]}  
+        fi
+        local qbt_fncname=${FUNCNAME[$qbt_depth]} 
+        local qbt_filename=$(basename ${BASH_SOURCE[$qbt_depth]})
+        # Format according to style
+        case "$qbt_style" in
+            short)
+                printf -v qbt_temp "[%s():%s:%s] " "$qbt_fncname" "$qbt_filename" "$qbt_linenum" 
+                qbt_result+="$qbt_temp"
+            ;;
+            bpath)      # for "standard" breakpath use
+                printf -v qbt_temp "/%s:%s" "$qbt_fncname" "$qbt_linenum" 
+                qbt_result+="$qbt_temp"
+            ;;
+            bpoint)      # for "standard" breakpoint use
+                printf -v qbt_temp "%s:%s" "$qbt_fncname" "$qbt_linenum" 
+                qbt_result+="$qbt_temp"
+                break   # first one only!
+            ;;
+            long|*)
+                if test -n "$qbt_prefix" ; then 
+                    qbt_result+="$qbt_prefix "
+                fi
+                printf -v qbt_temp "%2s %-20s %5s %s%s\n" \
+                    "$qbt_depth" \
+                    "$qbt_filename" \
+                    "$qbt_linenum" \
+                    "$qbt_fncname" \
+                    ""
+                qbt_result+="$qbt_temp"
+            ;;
+        esac
+    done
+    # Optional simplification for bpath case
+    if test -n "$qbt_chop" ; then
+        qbt_result="${qbt_result%$qbt_chop}"
+    fi
+    return 0
+}
+
+
+##############################################################################
+# qbptPathCommandSet <ipath> <cmd>  -- set command for breakpath no. <ipath>
+#       Do not use this the first time for <ipath>!
+##############################################################################
+qbptPathCommandSet()
+{
+    if test ! -v 1 ; then qerror ; return 1 ; fi
+    if test ! -v 2 ; then qerror ; return 1 ; fi
+    if test ! -v qbpath_table[$1] ; then 
+            qerror "Invalid index: $1" ; return 1 ; fi
+    qbpath_table[$1]="$2"
+    qbug "Set breakpath $1 to [$2]"
+    return 0
+}
+
+##############################################################################
+# qbptPointCommandSet <ipoint> <cmd>  -- set command for breakpoint no. <ipoint>
+#       Do not use this the first time for <ipoint>!
+##############################################################################
+qbptPointCommandSet()
+{
+    if test ! -v 1 ; then qerror ; return 1 ; fi
+    if test ! -v 2 ; then qerror ; return 1 ; fi
+    if test ! -v qbpoint_table[$1] ; then 
+        qerror "Invalid index: $1" ; 
+        return 0        # Continue on anyway
+    fi
+    qbpoint_table[$1]="$2"
+    qbug "Set breakpoint $1 to [$2]"
+    return 0
+}
+
+##############################################################################
+# qbptPathsList -- show content of breakpath table
+##############################################################################
+qbptPathsList()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local itable
+    for itable in ${!qbpath_reverse[@]} ; do
+        local path="${qbpath_reverse[$itable]}"
+        local command="${qbpath_table[$itable]}"
+        qprintf "%2s [%s] %s\n" "$itable" "$command" "$path"
+    done
+
+    qReturnOk ; return 0
+}
+
+##############################################################################
+# qbptPointsList -- show content of breakpoint table
+##############################################################################
+qbptPointsList()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local itable
+    for itable in ${!qbpoint_reverse[@]} ; do
+        local point=${qbpoint_reverse[$itable]}
+        local command=${qbpoint_table[$itable]}
+        qprintf "%3s [%s] %s\n" "$itable" "$command" "$point"
+    done
+    qReturnOk ; return 0
+}
+
+##############################################################################
+# qbptPathsEdit -- interactive editing of commands per breakpath
+##############################################################################
+qbptPathsEdit()
+{
+    qEnter "$@"  # our standard way to begin a function
+    # Show user the table:
+    qbptPathsList
+    qprintf "%s" "CURRENT is #$qbpath_ilatest : ${qbpath_reverse[$qbpath_ilatest]}"
+    qprintf " %s\n" "... cmd=[${qbpath_table[$qbpath_ilatest]}]"
+    qUserRead promptbase="Enter Index (default current):" defaultvalue="$qbpath_ilatest"
+    local itable="$qresult"
+    # TODO: use routine for checking for non-negative integer input
+    if ! expr "$itable" + 1 >/dev/null 2>/dev/null ; then
+        qerror "Ignoring non-numeric input: $itable" ; qReturnOk ; return 0
+    fi
+    if test ! -v qbpath_table[$itable] ; then
+        qerror "Ignoring Invalid index: $itable" ; qReturnOk ; return 0
+    fi
+    local command=${qbpath_table[$itable]}
+    local path=${qbpath_reverse[$itable]}
+    # show user that table entry
+    qprintf "%s" "SELECTED is #$itable : $path"
+    qprintf " %s\n" "... cmd=[$command]"
+    qUserRead promptbase="Enter New Command: [$command]"
+    local command="$qresult"
+    if test -n "$command" ; then
+        case "$command" in
+            y|'y '*) true ;;
+            n|'n '*) true ;;
+            *) qReturnFail "Command must start with y or n to enable/disable"
+                return 1
+            ;;
+        esac
+        qbpath_table[$itable]="$command"
+        qprintf "%s" "SET #$itable : ${qbpath_reverse[$itable]}"
+        qprintf " %s\n" "TO cmd=[${qbpath_table[$itable]}]"
+    else
+        true
+        qprintf "%s" "UNCHANGED #$itable : ${qbpath_reverse[$itable]}"
+        qprintf " %s\n" "IS cmd=[${qbpath_table[$itable]}]"
+    fi
+
+    qReturnOk ; return 0
+}
+
+##############################################################################
+# qbptPointsEdit -- interactive editing of commands per breakpoint
+##############################################################################
+qbptPointsEdit()
+{
+    qEnter "$@"  # our standard way to begin a function
+    # Show user the table:
+    qbptPointsList
+    qprintf "%s" "CURRENT is #$qbpoint_ilatest : ${qbpoint_reverse[$qbpoint_ilatest]}"
+    qprintf " %s\n" "... cmd=[${qbpoint_table[$qbpoint_ilatest]}]"
+    qUserRead promptbase="Enter Index (default current):" defaultvalue="$qbpoint_ilatest"
+    local itable="$qresult"
+    # TODO: use routine for checking for non-negative integer input
+    if ! expr "$itable" + 1 >/dev/null 2>/dev/null ; then
+        qerror "Ignoring non-numeric input: $itable" ; qReturnOk ; return 0
+    fi
+    if test ! -v qbpoint_table[$itable] ; then
+        qerror "Ignoring Invalid index: $itable" ; qReturnOk ; return 0
+    fi
+    local command=${qbpoint_table[$itable]}
+    local point=${qbpoint_reverse[$itable]}
+    # show user that table entry
+    qprintf "%s" "SELECTED is #$itable : $point"
+    qprintf " %s\n" "... cmd=[$command]"
+    qUserRead promptbase="Enter New Command: [$command]"
+    local command="$qresult"
+    if test -n "$command" ; then
+        case "$command" in
+            y|'y '*) true ;;
+            n|'n '*) true ;;
+            *) qReturnFail "Command must start with y or n to enable/disable"
+                return 1
+            ;;
+        esac
+        qbpoint_table[$itable]="$command"
+        qprintf "%s" "SET #$itable : ${qbpoint_reverse[$itable]}"
+        qprintf " %s\n" "TO cmd=[${qbpoint_table[$itable]}]"
+    else
+        true
+        qprintf "%s" "UNCHANGED #$itable : ${qbpoint_reverse[$itable]}"
+        qprintf " %s\n" "IS cmd=[${qbpoint_table[$itable]}]"
+    fi
+
+    qReturnOk ; return 0
+}
+
+
+##############################################################################
+# qbreakpoint -- add this to your code to (conditionally) execute a breakpoint
+#       If conditions are right,
+#       this will print some status and then enter the q debugger.
+#       Return status is 0.
+#
+# Breakpoints are active ONLY if qbp=y (see top of file).
+#
+# If active, then at each call to qbreakpoint:
+#
+# -- The call stack (provided by bash internal variables) is formatted into
+# a "breakpath" name, consisting of [/<fnc>:<line>] concatenated together,
+# starting with the most recent (omitting qbreakpoint itself).
+# NOTE: we assume that functions have unique names.
+#
+# -- Also we create a "breakpoint" name that is just <fnc>:<line> of the
+# caller of qbreakpoint. 
+#
+# -- The first time we see one of these names, we add it to the respective
+# breakpath or breakpoint table, with a default command "y" (see below).
+#
+# -- We now look in the breakpath and breakpoint tables to obtain the commands
+# for the given breakpath and breakpoint.
+# For each the command may be one of:
+#       y [<action>]   -- enable this breakpath/breakpoint
+#       n [<action>]   -- disable this breakpath/breakpoint
+#
+# -- If both breakpath and breakpoint have a 'y" (enable) command, then we
+# will execute an "enable action" else a "disable action", see below.
+#
+# -- If we are to execute an "enable action", then we will execute an <action>
+# as found in the following order:
+#       -- If an action is provided for the breakpath, we use that.
+#       -- Else if an action is provided for the breakpoint, we use that.
+#       -- Else we use the action defined in $qbpoint_defaultcmd
+# The action is then evaluated as a bash shell script using bash "eval".
+# Typically this will include a call to qDebuggerI to enter the debugger.
+#
+# -- If we are to execute a "disable action", then we will execute an <action>
+# as found in the following order:
+#       -- If command for breakpath is "n" and has an action, we use that.
+#       -- Else if command for breakpoint is "n" and has an action, we use that.
+#       -- Else we use action defined in $aqbpoint_altcmd
+#
+# -- Each <action> is a shell script to be passed to bash "eval" to execute.
+# Typically "enable" commands will make a call to qDebuggerI whereas "disable"
+# calls will not, but there are no hard rules.
+#
+##############################################################################
+qbpoint_latest='bogus'       # last breakpoint hit by qbreakpoint
+qbpath_latest='bogus'       # last breakpath hit by qbreakpoint, cleared by debugger
+qbreakpoint()
+{
+    # LOW LEVEL, do NOT call qEnter or qReturnOk
+
+    # CAUTION give unique names for all local variables in order to
+    # preserve ability to see local variables in call stack!
+
+    # Do nothing unless initialized
+    if ! test "$qbpoint_isinit" = y ; then
+        return 0
+    fi
+
+    # Do nothing unless interactive debugging turned on
+    if test "$qbp" != y ; then 
+        return 0
+    fi
+
+    local qbreakpoint_saveresult="$qresult"        # save qresult for restoral
+
+    # Get current breakpoint name / index in table
+    #  Deliberately shadow qbpoint_latest, which is used for debug info messages
+    local qbpoint_latest=''       # last breakpoint hit by qbreakpoint
+    qBackTrace start=2 style=bpoint ; qbpoint_latest="$qbt_result"
+    qbpoint_ilatest=${qbpoint_lookup[$qbpoint_latest]:-}
+    if test -z $qbpoint_ilatest ; then
+        # Not present in table ... add it
+        qbpoint_ilatest=$qbpoint_inext
+        qbpoint_inext=$((qbpoint_inext + 1))
+        qbpoint_lookup[$qbpoint_latest]=$qbpoint_ilatest
+        qbpoint_reverse[$qbpoint_ilatest]=$qbpoint_latest
+        qbpoint_table[$qbpoint_ilatest]='y'  # enabled, default action
+    fi
+    local qbpoint_command=${qbpoint_table[$qbpoint_ilatest]}
+    # Command, if any, starts at 3rd character
+    local qbpoint_action=''
+    case "$qbpoint_command" in
+        ?) true  ;;         # single character command
+        *) # assume command letter, space, subcommand
+            qbpoint_action=${qbpoint_command#??} 
+        ;;
+    esac
+
+    # Get current breakpath name / index in table
+    #  Deliberately shadow qbpath_latest, which is used for debug info messages
+    local qbpath_latest=''       # last breakpath hit by qbreakpoint
+    qBackTrace start=2 style=bpath ; qbpath_latest="$qbt_result"
+    qbpath_ilatest=${qbpath_lookup[$qbpath_latest]:-}
+    if test -z $qbpath_ilatest ; then
+        # Not present in table ... add it
+        qbpath_ilatest=$qbpath_inext
+        qbpath_inext=$((qbpath_inext + 1))
+        qbpath_lookup[$qbpath_latest]=$qbpath_ilatest
+        qbpath_reverse[$qbpath_ilatest]=$qbpath_latest
+        qbpath_table[$qbpath_ilatest]='y'
+    fi
+    local qbpath_command=${qbpath_table[$qbpath_ilatest]}
+    # Command, if any, starts at 3rd character
+    local qbpath_action=''
+    case "$qbpath_command" in
+        ?) true ;;            # single character
+        *) qbpath_action=${qbpath_command#??}  ;;
+    esac
+
+    # Do we use an enable action or disable action?
+    local qbreakpoint_pointenable=n
+    case "$qbpoint_command" in
+        y|'y '*) qbreakpoint_pointenable=y ;;
+    esac
+    local qbreakpoint_pathenable=n
+    case "$qbpath_command" in
+        y|'y ') qbreakpoint_pathenable=y ;;
+    esac
+    local qbreakpoint_enable=n          # combined result
+    if test "$qbreakpoint_pointenable" = y && 
+                    test "$qbreakpoint_pathenable" = y ; then
+        qbreakpoint_enable=y 
+    fi
+
+    # Find which action to use
+    local qbreakpoint_action=''
+    if test "$qbreakpoint_enable" = y ; then  # enable
+        #       -- If an action is provided for the breakpath, we use that.
+        if test -n "$qbpath_action" ; then
+            qbreakpoint_action="$qbpath_action"
+        #       -- Else if an action is provided for the breakpoint, we use that.
+        elif test -n "$qbpoint_action" ; then
+            qbreakpoint_action="$qbpoint_action"
+        #       -- Else we use the action defined in $qbpoint_defaultcmd
+        else
+            qbreakpoint_action="$qbpoint_defaultcmd"
+        fi
+    else        # disable
+        #       -- If command for breakpath is "n" and has an action, we use that.
+        if test "$qbreakpoint_pathenable" = n && test -n "$qbpath_action" ;  then
+            qbreakpoint_action="$qbpath_action"
+        #       -- Else if command for breakpoint is "n" and has an action, we use that.
+        elif test "$qbreakpoint_pointenable" = n && test -n "$qbpoint_action" ;  then
+            qbreakpoint_action="$qbpoint_action"
+        #       -- Else we use action defined in $qbpoint_altcmd
+        else
+            qbreakpoint_action="$qbpoint_altcmd"
+        fi
+    fi
+    if test -z "$qbreakpoint_action" ; then
+        qerror "Unexpected: No command found; go to debugger"
+        qbreakpoint_action="qDebuggerI"
+    fi
+
+    # Tricky part: don't pile up break points... that is bad news!
+    # Disable qbp so we don't re-enter.
+    # That would be a problem except if we go to the interactive debugger,
+    # which can enable it again... if appropriate... tricky...
+    # The variable qbpoint_qbp (below) will be used by qDebuggerI
+    # as the value to restore to.
+    # Since it is "local" it will shadow any nested calls to us.
+    local qbpoint_qbp="$qbp" ; qbp=n
+
+    # Execute the action
+    qbug "Breakpoint Reached: path#$qbpath_ilatest point#$qbpoint_ilatest trace=$qbpath_latest"
+    qbug "... enabled=$qbreakpoint_enable action=[$qbreakpoint_action]"
+    # The following must be "eval" and NOT "qEval" to avoid unwanted recursion
+    eval "$qbreakpoint_action" || qerror "Ignoring error from: $qbreakpoint_action"
+    qbug "Breakpoint Done, qresult=[$qresult],  from $qbpath_latest"
+
+    # re-enable ... possibly as modified by qDebuggerI
+    qbp="$qbpoint_qbp"
+
+    qresult="$qbreakpoint_saveresult"      # restore
+    return 0
+}
+
+
+##############################################################################
+# qDebuggerI -- interactive debugger, reads lines from user, 
+#       and executes commands, which can lead to complicated stuff.
+#       Does NOT enable breakpoints (qbp=y) automatically.
+#
+#       See help message below.
+#
+#       Note there are three ways of executing commands:
+#       r -- only simple commands accepted.
+#       v -- any bash statement is ok, so long as it fits on a line ("eval")
+#       if no match, is treated like v
+##############################################################################
+qDebuggerI_Help='
+Q Debugger commands:
+Input is evaluated as a bash command line (bash eval), unless it is one of:
+h -- for this help message            c -- continue execution (leave debugger)
+q -- exit program                     t -- print backtrace
+l -- list breakpaths                  L -- list breakpoints
+b -- disable current breakpath        B -- disable current breakpoint
+e -- edit breakpaths                  E -- edit breakpoints
+r <cmd> ...  -- run command ala qrun  v <cmd>... -- eval <cmd>... using bash
+' # end help message
+qDebuggerI_level=0      # Internal use ; see also qStart
+qDebuggerI_lastlevel=0  # Internal use
+qDebuggerI_once=n       # Internal use; detect first time
+qDebuggerI()
+{
+    # Low level function, do NOT call qEnter or qReturnOk
+
+    # CAUTION give unique names for all local variables in order to
+    # preserve ability to see local variables in call stack!
+
+    qTrapDisable   # avoid unwanted recursion
+
+    # Keep track of recursion level
+    local qdbi_level=$((qDebuggerI_level + 1))
+    qDebuggerI_level=$qdbi_level
+    # Are we resuming?
+    local qdbi_lastlevel="$qDebuggerI_lastlevel"
+    qDebuggerI_lastlevel="$qDebuggerI_level"
+
+    local qdbi_ourname="QDBUG[$qdbi_level]"
+    local qdbi_fail=n   # y for fatal failure, s for soft failure
+    local qdbi_qresult="$qresult" # save
+
+    local qdbi_qbp="$qbp"   # what we restore qbp to
+    # Special hack... if called from qbreakpoint !!! 
+    #   ... reset break point enable to condition on entering qbreakpoint
+    if test -v qbpoint_qbp ; then
+        qdbi_qbp="$qbpoint_qbp"
+    fi
+    qbp=n  # Save and turn off
+
+    local qdbi_qbug="$qbug"  # Save for later restoral
+    qbug=n   # Turn off debugs, would make the menu too hard to use
+    
+    local qdbi_ifrom=''  # index in breakpath table
+
+    qprint ; qprint  # Give some break in the output
+
+    if test $# -gt 0 ; then qbug "Ignoring input args: $@" ; fi
+
+    # Get ourselves to the end if we had a failure. Too bad we don't have "goto".
+    if test "$qdbi_fail" = n ; then
+        # Here to really enter the debugger
+        if test "$qdbi_lastlevel" = "$qdbi_level" ; then
+            qprint ; qprint "$qdbi_ourname CONTINUING level $qdbi_level (h for help)"
+        elif test "$qdbi_lastlevel" -lt "$qdbi_level" ; then
+            qprint ; qprint "$qdbi_ourname ENTERED level $qdbi_level (h for help)"
+        else
+            qprint ; qprint "$qdbi_ourname RESUMED at level $qdbi_level (h for help)"
+        fi
+        if test "$qDebuggerI_once" != y ; then
+            # First time
+
+            # Since the debugging user is likely to mistype things, it might be nice to
+            # turn off set -eu protections because they cause fatal errors to the program
+            # But that isn't always the best idea.
+            # Hmmmm
+
+            # First time warnings
+            if test "$qdbi_qbug" != y ; then
+                qprint "NOTE! Debug messages not enabled. Enter: qbug=y" ; fi
+            if test "$qdbi_qbp" != y ; then
+                qprint "NOTE! Breakpoints not enabled. Enter: qbp=y" ; fi
+        fi
+        # Print breakpath... convenient call stack tracepack
+        if test -n "$qbpath_latest" ; then
+            qprint "$qPretty_magenta""AT BREAKPATH""$qPretty_off"" $qbpath_ilatest : $qbpath_latest"
+        fi
+        # Printing the breakpoint might seem superfluous, but it helps the user tell the
+        # difference between a breakpath and a breakpoint.
+        if test -n "$qbpoint_latest" ; then
+            qprint "$qPretty_magenta""AT BREAKPOINT""$qPretty_off"" $qbpoint_ilatest : $qbpoint_latest"
+        fi
+        # Loop on user inputs until told to break the loop,
+        #       after which we can return to caller and continue program.
+        while test "$qdbi_fail" = n ; do
+            if ! qUserRead "promptbase=$qdbi_ourname>" "defaultvalue=$qbugi_command" ; then
+                qdbi_fail=y
+                qerror "Aborting due to read error"
+                break
+            fi
+            # Debug messags from evaluating qresult via e.g. qResult
+            # would just be too much. So use qresult directly.
+            local qdbi_inline="$qresult" ; qresult=''
+            local qdbi_args="${qdbi_inline#??}"
+            # Look for our special commands, else pass to bash eval
+            case "$qdbi_inline" in
+                h|'h '*)  # h = "help"
+                    qprintf "%s\n" "$qDebuggerI_Help"
+                    continue
+                ;;
+                c)  # c = "continue"
+                    break           # break loop and return to caller
+                ;;
+                q|'q '*)  # q = "quit
+                    qprint "$qdbi_ourname: Aborting program... Goodbye!"
+                    qbug=$qdbi_qbug   # restore debugs
+                    qbp=$qdbi_qbp   # restore
+                    qTrapDisable
+                    exit 0
+                    return 1  # not reached
+                ;;
+                t)    # print backTrace
+                    qBackTrace start=2 
+                    qprint "$qbt_result"
+                    continue
+                ;;
+                b)  # disable current breakpath
+                    qbptPathCommandSet "$qbpath_ilatest" "n"
+                    continue
+                ;;
+                B)  # disable current breakpoint
+                    qbptPointCommandSet "$qbpoint_ilatest" "n"
+                    continue
+                ;;
+                l)  # list breakpaths
+                    qbptPathsList 
+                    continue
+                ;;
+                L)  # list breakpoints
+                    qbptPointsList 
+                    continue
+                ;;
+                e)  # edit breakpaths
+                    qbptPathsEdit || true
+                    continue
+                ;;
+                E)  # edit breakpoints
+                    qbptPointsEdit || true
+                    continue
+                ;;
+                r|'r '*)  # r = "run"
+                    qprint "$qdbi_ourname: Running: $qdbi_args"
+                    set -- "$qdbi_args"        # put results into $@
+                    qbug=$qdbi_qbug   # restore debugs
+                    qbp=$qdbi_qbp   # restore debugs
+                    qTrapEnable
+                    { $@ ; } || { qbug=n qerror "That failed (ignored)" ; }
+                    qTrapDisable   # avoid unwanted recursion
+                    qdbi_qbug="$qbug" ; qbug=n  # save and then turn off qbug
+                    qdbi_qbp="$qbp" ; qbp=n  # save and then turn off qbp
+                    qprint "$qdbi_ourname: RESULT: $qresult"
+                    continue
+                ;;
+                t)    # print backTrace
+                    qBackTrace start=2 
+                    qprint "$qbt_result"
+                    continue
+                ;;
+                v|'v '*)  # v = "eval" ... useful to escape our own commands
+                    # drop through
+                ;;
+                *) # other input
+                    qdbi_args="$qdbi_inline"
+                    # drop trough
+                ;;
+            esac
+            # unmatched, or remainder of v command ... use bash eval
+            qprint "$qdbi_ourname: Evaling: $qdbi_args"
+            qbug=$qdbi_qbug   # restore debugs
+            qbp=$qdbi_qbp   # restore debugs
+            local qdbi_status=0
+            qdbi_fail=n
+            qTrapEnable
+            qEval "$qdbi_args" || {  qdbi_fail=y; } 
+            qTrapDisable
+            qdbi_qbug="$qbug" ; qbug=n  # save and then turn off qbug
+            qdbi_qbp="$qbp" ; qbp=n  # save and then turn off qbp
+            if test "$qdbi_fail" = y ; then
+                qerror "That failed (ignored)"
+                qdbi_fail=n
+            fi
+            qprint; # give some separation
+            qprint "$qdbi_ourname: DONE. RESULT=[$qresult] FROM=[$qdbi_args] "
+            continue
+        done
+    fi
+    # Here if we broke the loop
+    if test "$qdbi_fail" = y ; then
+        qerror "Aborting due to errors" 
+    else
+        qprint "$qdbi_ourname: Continuing..."
+    fi
+    # CLEAN UP! Make sure we come through here... even if we will exit
+    #   (since we could trap the exit)
+    qbpath_latest=''    # once only
+    qbpoint_latest=''    # once only
+    qbug=$qdbi_qbug   # restore
+    qbp="$qdbi_qbp"   # restore 
+    qresult="$qdbi_qresult"  # restore
+    qDebuggerI_lastlevel="$qDebuggerI_level"
+    qDebuggerI_level=$((qdbi_level - 1))
+    qDebuggerI_once=y
+    # Low level fnc, do NOT call qReturnOk
+    if test "$qdbi_fail" = y ; then
+        exit 1
+    fi
+    qTrapEnable
+    return 0
+}
+
+
+##############################################################################
+# qTrapHandlerAdd <fncname> -- add a trap handler to list to call on exception.
+#       <fncname> is the name of the trap handler.
+#
+#       Returns 0 status. No return value.
+#
+#       It is okay to call redundantly.
+#       Call this just before calling qStart, so that
+#       trap handlers for lower level systems are called first.
+##############################################################################
+declare -a qTrapHandlers=( )    # indexed list of trap handlers
+qTrapHandlerAdd()
+{
+    local ihandler
+    local handler="$1"
+    for ihandler in ${!qTrapHandlers[@]} ; do
+        local otherhandler=${qTrapHandlers[ihandler]}
+        if test "$otherhandler" = "$handler" ; then
+            return 0
+        fi
+    done
+    qTrapHandlers+="$handler"
+    ### declare -p qTrapHandlers  # DEBUG %%%%%%%%%
+    return 0
+}
+
+
+##############################################################################
+# qTrapHandler -- may be called on exceptions
+#       Other trap handlers might call this one before doing their
+#       cleanup, while the evidence is still fresh...
+##############################################################################
+qTrapHandler()
+{
+    # If we got here, we must have been enabled, but just in case
+    qtrap=y    # So qTrapDisable will work for sure
+    qTrapDisable  # don't trap again... can cause unwanted recursion
+    # Tell user:
+    # DO NOT CALL qerror etc. as that leads to unwanted recursion
+    qprint "$qPretty_red""TRAPPED EXCEPTION! Back trace:""$qPretty_off"
+    qprint "(Note: bash often trashes line number of level 2)"
+    qBackTrace style=long && qprint "$qbt_result"
+    qprint "$qPretty_red""TRAPPED EXCEPTION! (Cleaning up)""$qPretty_off"
+    # If breakpoints are enabled, maybe go to debugger or something
+    qbreakpoint         # definitely should be a breakpoint! May call debugger
+    # Now call application trap handlers
+    local ihandler
+    for ihandler in ${!qTrapHandlers[@]} ; do
+        qtrap=y    # So qTrapDisable will work for sure
+        qTrapDisable  # don't trap again... can cause unwanted recursion
+        local handler=${qTrapHandlers[ihandler]}
+        # Cannot use qbug here
+        qprint "qTrapHandler: Calling handler: $handler"
+        $handler || true   # call the handler, ignore errors
+    done
+    qtrap=y    # So qTrapDisable will work for sure
+    qTrapDisable  # don't trap again... can cause unwanted recursion
+    # Not all traps are certain death, but most of them are (in bash).
+    # For consistency, exit here.
+    qprint "$qPretty_red""TRAPPED EXCEPTION! Goodbye!""$qPretty_off"
+    exit 1
+}
+
+##############################################################################
+# qTrapEnable -- enable standard exception handling (if $qtrap = y)
+#
+#       Most likely this should be called only within qlib?
+##############################################################################
+qTrapEnable()
+{
+    # Trap exceptions
+    if test "$qtrap" = y ; then
+        trap 'qTrapHandler' EXIT HUP TERM INT QUIT ABRT ALRM
+    fi 
+    return 0
+}
+
+
+##############################################################################
+# qTrapDisable -- disable standard exception handling (if $qtrap = y)
+#
+#       Most likely this should be called only within qlib?
+##############################################################################
+qTrapDisable()
+{
+    if test "$qtrap" = y ; then
+        # Removes traps
+        trap '-' EXIT HUP TERM INT QUIT ABRT ALRM
+    fi
+    return 0
+}
+
+
+##############################################################################
+# qStart [<cmd> [<arg>...]]
+#       Call from end of each script file to possibly start things running.
+#       Do NOT call otherwise; this works only as the most top level
+#       function of your program, apart from minor initializations.
+#
+#       With no arguments, treated as if <cmd> is '-'
+#       <cmd> is one of:
+#               '-' (a hyphen)  -- if <arg>... provided, pass to qrun
+#                       else enter debugger.
+#               a command to Be passed to qrun, which can be any
+#                       function, shell builtin or program.
+#                       It could even be:  eval "bash script"
+# 
+# qStart detects whether the file it is called from was the orginal file
+# invoked by bash, and if so it executes the given command.
+##############################################################################
+qStartOnce=n    # detect unwanted recursion
+qStart()
+{
+    # Save state, get arguments, check if we should run...
+    local save_qbp="$qbp" ; qbp=n  # will be restored
+    qEnter "$@"  # our standard way to begin a function
+    local cmd
+    if test -v 1 ; then cmd="$1" ; shift 
+    else cmd='-'   # see special treatment below
+    fi
+    local currentFile=${BASH_SOURCE[0]}   # file we are in now
+    local fromFile=${BASH_SOURCE[1]}   # who called us
+    local depth
+    for depth in ${!BASH_SOURCE[@]} ; do
+        true
+    done
+    local firstFile=${BASH_SOURCE[$depth]}
+    if test "$fromFile" != "$firstFile" ; then
+        qbug "Skipping... Called from $fromFile instead of $firstFile"
+        qReturnOk 
+        qbp="$save_qbp"   # restore
+        return 0
+    fi
+    if test "$qStartOnce" = y ; then   # shouldnt happen?
+        qReturnFail "Ignoring redundant qStart call"
+        qbp="$save_qbp"   # restore
+        return 0
+    fi
+
+    # Here we really should run
+    qStartOnce=y
+    qbug "Called from original start file $firstFile -- really start!"
+
+    # Breakpoint stuff initialization
+    # Set the base. Start with the caller of qStart, 
+    # since line numbers in qStart will vary depending on options.
+    qBackTrace start=1 style=bpath ; qbreakpath_base="$qbt_result"
+    qbpath_ilatest=0 
+    qbpath_latest="$qbreakpath_base"
+    qbpath_lookup=( )
+    qbpath_lookup[$qbreakpath_base]=0
+    qbpath_table=( )
+    qbpath_table[0]='y'
+    qbpath_reverse=( )
+    qbpath_reverse[0]="$qbreakpath_base"
+    qbpath_inext=1
+
+    qBackTrace start=1 style=bpoint ; qbpoint_latest="$qbt_result"
+    qbpoint_ilatest=0 
+    qbpoint_lookup=( )
+    qbpoint_lookup[$qbpoint_latest]=0
+    qbpoint_table=( )
+    qbpoint_table[0]='y'
+    qbpoint_reverse=( )
+    qbpoint_reverse[0]="$qbpoint_latest"
+    qbpoint_inext=1
+
+    qbpoint_isinit=y    # allow breakpoints to work now
+
+    qTrapEnable    # turn on traps on exceptions, if enabled
+
+    qbp="$save_qbp"   # restore
+    if test "$cmd" = '-' ; then
+        # Using '-' instead of command means one of two things:
+        #       With no args, enter debugger
+        #       With args, they are passed to qrun as a command;
+        #       ... very useful for debugging individual functions
+        #       ... without having to write a test script to do it.
+        local qd_interactive=n
+        # LOW LEVEL, do not call qEnter or qReturnOk if we will be interactive
+        if test $# = 0 ; then
+            # Interactive
+            qd_interactive=y
+            # Note qDebuggerI will call qTrapEnable when appropriate.
+            qDebuggerI
+            while true ; do
+                qprint ; qprint ; qprint 
+                qprint "qStart: LAST CHANCE... Use q to quit program" 
+                qDebuggerI
+            done
+        else
+            if qrun "$@" ; then
+                qbug "SUCCESS: $@"
+            else
+                qerror FAILED "$@" 
+                qresult=''
+            fi
+        fi
+    else
+        # Here executed the command passed to us, using qrun.
+        # This will typically be a function that implements the functionality
+        # of the program.
+        test "$qbpq" = y && qbreakpoint  # possible breakpoint
+        qTrapEnable        # possibly trap exceptions
+        if ! qrun "$cmd" $@ ; then      # run the command
+            qTrapDisable
+            test "$qbpq" = y && qbreakpoint  # possible breakpoint
+            # NOTE: qrun already printed error message about command failure.
+            save_qbp="$qbp" ; local qbp=n  # will be restored
+            qReturnFail "FAILED - Goodbye!"
+            qbp="$save_qbp"   # restore
+            while test "$qbp" = y ; do  # auto-breakpoint
+                qprint ; qprint; qprint
+                qprint "LOWEST LEVEL... Use q to quit program"
+                qDebuggerI
+            done
+            return 1
+        else
+            qTrapDisable
+            qbug "SUCCESS: $cmd $@"
+        fi
+    fi
+    save_qbp="$qbp" ; local qbp=n  # will be restored
+    # Feature: print any unhandled result to stdout
+    # In theory this can allow external programs to invoke us as:
+    #   result=$(thisprogram args)
+    # Since qlib is careful to emit all messages to stderr, 
+    # except as return values in some cases, stdout is a clear channel
+    # for returning values.
+    if test -n "$qresult" ; then
+        echo $qresult
+        qresult=''
+    fi
+
+    # We really are supposed to be the last thing. So exit now.
+    qTrapDisable        # just in case
+    exit 0
+
+    # If we didn't exit above, then proceed...
+    # but there would need to be more cleanup code.
+    qReturnOk 
+    qbp="$save_qbp"   # restore
+}
+
+
+# For unit testing, we are done!
+if test "$qUnitTest" = y ; then echo; echo "UNIT TESTS DONE; Goodbye." ; exit 0; fi
+##############################################################################
+# Here is the only directly executed code (not in a subroutine) apart from
+# the variable assignments at the top.
+qStart - "$@"    # Run debugger if and only if this script is the top level
+
+############# End of File... return what qStart returns...
+############# Do not put exit here!!! Do not put return here either!!!!
+# MBU Release mbu-20251115

@@ -1,0 +1,18 @@
+#!/bin/bash
+#
+# mbuformat -- interactive, format disk for a new partition set
+#       Yes, the previous content of the disk will likely be lost!
+#
+# 
+#
+# NOTE:
+# This must be run with the MBU directory being the current working directory!
+#
+
+source ./mbulib || { echo "$0 : Run this in MBU directory only - Bye!" ; exit 1; }
+
+qStart mbuFormatI_WithLogFile "$@"    # Run command if and only if we're the top level
+
+
+
+# MBU Release mbu-20251115

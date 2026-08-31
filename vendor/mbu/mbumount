@@ -1,0 +1,161 @@
+#!/bin/bash
+#
+# mbumount [<spec>]... -- mount partitions into the MBU mount directory
+#               This allows inspecting the contents of otherwise unmounted
+#               disk partitions.
+#
+#               Refer to README-MBU.txt for overview
+#
+#               See mmbmountHelp below (or use -help argument) for
+#               usage instructions.
+#
+# NOTE:
+# This must be run with the MBU directory being the current working directory!
+#
+
+set -eu  # abort on errors!
+if test -z "${mbumountOnce:-}" ; then mbumountOnce=y ;  else return 0 ; fi
+source ./mbulib || { echo "$0 : Run this in MBU directory only - Bye!" ; exit 1; }
+
+
+##############################################################################
+# mbumountI -- ask user for options, then mount some partitions
+#       into the MBU mount directory.
+#       If a partition is mounted, a symlink is made to the mountpoint instead.
+##############################################################################
+mbumountI_Help='
+mbumount [<opt>]... [<spec>]... -- mount partitions in the MBU mount directory
+    This is interactive if no specifications <spec> are given.
+    Options:
+        help|-help|--help) -- for this message, and exit
+    Positional arguments [<spec>]... :
+        Each <spec> specifies a partition (see below).
+
+With no partitions specified, you will enter an interactive session,
+which accepts the same partition specifications as the command line
+(see below).
+
+NOTES:
+(1) This must be run with the MBU directory being the current working directory!
+(2) Be SURE to run ./mbuclean when done looking at the mounted partitions!
+(3) Be SURE to detach backup devices when done (AFTER ./mbuclean).
+(4) MBU expects that all partitions are named with names of the form:
+        <set>-<fnc>
+    This software may not function with missing or non-conformant names.
+'       # End help message
+mbumountI()
+{
+    qEnter "$@"  # our standard way to begin a function
+
+    # Get options:
+    local dohelp=n
+    qOption 'help:dohelp=y,-help:dohelp=y,--help:dohelp=y' "$@"
+    shift $qresult
+    # Get help out of the way
+    if test "$dohelp" = y ; then
+        qprintf "%s\n" "$mbumountI_Help" 
+        qprint "$mbuDevFind_SpecHelp"
+        qReturnOk ; return 0
+    fi
+
+    # Positional parameters are specs for mbuDevFind
+    mbuDevRefreshMaybe
+    local selected=''    # this will be words which will match partition name list
+    if ! mbuDevFind "$@" ; then qReturnFail ; return 1 ; fi
+    qResult selected
+
+    # Interrogate user? only if no selection passed
+    if test -n "$selected" ; then
+        true
+    else        # User interaction
+        # Get some data to show user, and defaults
+        mbuActiveSetNameFind ; local fromset ; qResult fromset
+        mbuBackupSetNameFind ; local outsets ; qResult outsets     # may be empty! or multiple!
+        local defaultsets="backup"    # and give a default for user input
+        if test -z "$outsets" ; then 
+            outsets="MISSING"       # this is just for diagnostics!
+            defaultsets="all"    # and give a default
+        fi
+        local allparts=''
+        mbuDevFind 'devtype=part'
+        local allpdevs ; qResult allpdevs
+        local devname
+        for devname in $allpdevs ; do
+            allparts+="${mbuDevP_partname[$devname]} "
+        done
+
+        qprint
+        qprint "This will mount or link partitions into the MBU mount directory:"
+        qprint "          $mbuMountDir"
+        qprint "$mbuDevFind_SpecHelp"      # detailed input help here
+        qprint "Partitions that can be selected by name (use 'all' for all):" 
+        qprint '  ' $allparts
+        qprint "Partition sets that can be selected by name:"
+        qprint "    active : $fromset    backup : $outsets"  # Be nice and give a hint
+        qprint 
+        if test -z "$defaultsets" ; then
+            qprint "Enter partition(s) to be mounted/linked: "
+            local input=''  # Temporary variable
+            qrun r=input qUserRead promptbase="MBUMOUNT---->" defaultvalue=all
+            if test -z "$input" ; then
+                qprint Goodbye
+                qReturnFail ; return 1
+            else
+                selected+="$input "
+            fi
+        else
+            qprint "Enter partitions, or just ENTER for [$defaultsets]: "
+            local input=''  # Temporary variable
+            qrun r=input qUserRead promptbase="MBUMOUNT---->" defaultvalue="$defaultsets"
+            if test -z "$input" ; then
+                selected+="$defaultsets "
+            else
+                selected+="$input "
+            fi
+        fi
+        qprint; qprint
+        if ! mbuDevFind $selected ; then qReturnFail ; return 1 ; fi
+        qResult selected
+    fi
+    
+    local failed=n
+    local didselects=n
+    local devname
+    for devname in $selected ; do
+        didselects=y
+        local partname="${mbuDevP_partname[$devname]:-}"
+        qbug "Selected: $devname partname=$partname"
+        if ! qrun mbuMountFriendly "devname=$devname" ; then
+            failed=y
+            qprint "...Failed, CONTINUING anyway..."
+        fi
+    done
+
+    if test "$failed" = y ; then
+        qReturnFail "SOME FAILURES -- be sure to use ./mbuclean to clean up!"
+        return 1
+    else
+        if test "$didselects" = n ; then
+            quser 'Nothing DONE. Goodbye!'
+        else
+            qprint "$qPretty_underline"
+            qprint "$0 : DONE -- look in: $mbuMountDir"
+            qprint "............ be SURE to use ./mbuclean to clean up!"
+            qprint "$qPretty_off"
+        fi
+        qReturnOk ; return 0
+    fi
+}  # end mbumountI
+
+
+
+##############################################################################
+# Here is the only directly executed code (not in a subroutine) apart from
+# the variable assignments at the top.
+qStart mbumountI "$@"    # Run command if and only if we're the top level
+
+############# End of File... return what qStart returns...
+############# Do not put exit here!!! Do not put return here either!!!!
+
+
+# MBU Release mbu-20251115

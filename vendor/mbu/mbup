@@ -1,0 +1,31 @@
+#!/bin/bash
+#
+# mbup - Merrill Backup Utility Program
+#       By default, mbup is interactive and unless directed otherwise
+#       backs all mounted partitions to the backup disk (set) 
+#       which it discovers.
+#       Various options modify this behavior, use
+#               mbup help   -- for a help message
+#       To see what will be done without actually doing it, use
+#               mbup scriptonly
+#
+#       REQUIREMENTS:
+#       Requires disk partitioning, including backup disk, following
+#       the MBU disk partition naming scheme.
+#       Run this command only in the mbu installation directory as:
+#               ./mbup
+#       Please see README-MBU.txt for more detailed information
+#
+#
+##############################################################################
+
+##############################################################################
+### optional use local mbu.cfg file if present
+if test -f "./mbup.cfg" ; then
+    source "./mbup.cfg" || { echo "FAILED TO READ ./mbup.cfg "  ; exit 1; }
+fi
+
+source ./mbulib || { echo "$0 : Run this in MBU directory only - Bye!" ; exit 1; }
+
+qStart mbuBackupWithLogFile "$@"    # Run command if and only if we're the top level
+# MBU Release mbu-20251115

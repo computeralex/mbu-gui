@@ -1,0 +1,186 @@
+#!/bin/bash
+#
+# foobar -- what does foobar do? Replace this template line with 
+# something real.
+#
+# Usage: see foobarMain_Help below
+
+##############################################################################
+# (1) foobarOnce -- to ensure we include this file only once 
+if test -z "${foobarOnce:-}" ; then foobarOnce=y ;  else return 0 ; fi
+
+##############################################################################
+# (2) Here to conditionally set configuration variables for all he files that
+# we source. This has the general form:  
+#               : ${<varname>:=<value>}
+# ... and it sets variable named <varname> to <value> only if it was not
+# previously set (or was set to empty). 
+# This allows such variables to be overriden in the command
+# execution environment, before we even get here.
+# Refer to tops of the files to be sourced for such configuration variables.
+#maybe# : ${qDiagnosticPrefix:='FOOBAR'}
+
+
+##############################################################################
+# (3) Source all the files we need, in any order.
+# This assumes permanent installation of all components in one directory!
+source ./qlib || { echo "$0 : Run this in Installation Directory only - Bye!" ; exit 1; }
+
+##############################################################################
+# (4) Here to set our own configuration variables - conditionally, so as to allow
+# them to be overridden in the execution environment.
+: ${foobarConfigExample:='configuration-example'}
+
+
+##############################################################################
+# (5) Subroutines (aka functions) and global variables follow.
+# Be sure to attribute ALL local variables in functions as "local".
+
+
+
+foobarRemoveMe='======= INSTRUCTIONS FOR USING THIS TEMPLATE FILE
+
+(1) 
+Decide if you are creating a library file (not usually run directly)
+or a program file (usually run directly).
+Library files, when run, should use "qStart -", which allows full access
+to all of the subroutines as well as external programs.
+Program files, when run, should enter your foobarMain subroutine.
+Library files are particularly intended to be sourced into other bash scripts.
+But program files can be sourced into other bash scripts as well.
+So really there is no difference between a program and a library except
+for the default action when invoked directly.
+
+(2)
+Pick a hopefully unique module name for this file.
+You should use this module name as the first part of all global variables
+and functions.
+
+(3)
+Copy the template file (this file) to your own filename.
+Typically the filename should be the same as your module name, perhaps with
+"lib" added for libraries -- although this is not a requirement.
+
+(4)
+Open your file in a text editor.
+Change all instances in this file of "foobar" to the module name.
+Change the description at the top of the file.
+Save it.
+
+(5)
+Make sure that your file is executable, e.g.
+chmod +x ./foobar
+
+(6) 
+Your script file can now be executed, e.g.
+./foobar 
+./foobar help
+And try debugging:
+qbug=y ./foobar
+
+(7)
+Remove all these instructions when you have completed the above instructions.
+
+(8)
+Add useful code to your script file.
+You can simply clone foobarMain and make a new function (after changing the
+name of course)... you can even leave in a help message.
+
+=================== END INSTRUCTIONS
+'  # end use instructions - remove after creating a new file from template.
+
+
+
+
+##############################################################################
+# foobarWidgetsMake -- example subroutine
+#       Options:
+#           maxwidgets=  max number of widgets to use
+#           maxsize=  limit to size of each widget
+#           o=  output file path
+#       Return value on success:
+#           The actual filepath used
+##############################################################################
+foobarWidgetsMake()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local default_filepath='./widgets'
+    local filepath="$default_filepath"
+    local maxwidgets=33
+    local maxsize=100
+    qOption 'o:filepath,maxwidgets,maxsize,'  "$@"
+    shift $qresult
+    if test $# -gt 0 ; then qReturnFail "Extra args: $@" ; return 1; fi
+    if test -z "$filepath" ; then 
+        filepath="$default_filepath" 
+        qbug "Substituting default filepath $filepath"
+    fi
+    # echo "WIDGETS here, max $maxwidgets, max size $maxsize" >"$filepath"
+    qReturnOk "$filepath" ; return 0
+}
+
+
+##############################################################################
+# foobarMain -- main subroutine of foobar program
+#       Can also be called from a larger program.
+##############################################################################
+foobarMain_Help='
+Usage: [<option>...] [<positional parameter>]...
+Options in any order:
+    help|-help|--help   -- print this help message
+'  # End of help message
+foobarMain()
+{
+    qEnter "$@"  # our standard way to begin a function
+    # Primary local variables:
+    local result=''   # what we will return if successful
+
+    # Options:
+    local dohelp=n
+    qOption 'help:dohelp=y,-help:dohelp=y,--help:dohelp=y,' "$@"
+    shift $qresult
+    if test $# -gt 0 ; then qReturnFail "Extra args: $@" ; return 1; fi
+
+    # Help option
+    if test "$dohelp" = y ; then
+        printf "%s\n" "$foobarMain_Help" 
+        qReturnOk ; return 0 ; fi
+
+    # Here is some pretend useful code
+    local filepath=''
+    if ! qUserRead promptbase='ENTER OUTPUT FILEPATH (optional)' ; then
+        qReturnFail ; return 1 ; fi
+    qResult filepath
+    if ! foobarWidgetsMake o="$filepath" ; then
+        qReturnFail "It didnt work out!" ; return 1 ; fi
+    qResult filepath
+    quser "PRETENDED TO WRITE OUTPUT FILE $filepath"
+
+    # Find the result 
+    result="AN EXAMPLE, like $foobarConfigExample"
+
+    # User verbosity is a matter of judgement... one of
+    qbug  "We got $result"      # tell developer
+    quser "We got $result"      # tell end user (tells developer too)
+    qerror "We really failed: $result"   # tell all
+    quser "I Was only kidding about that... all is good!"
+    quser "Expect to see some output coming your way!"
+
+    # All done OK! Return the result
+    qReturnOk "$result" ; return 0
+}
+
+
+
+##############################################################################
+# (6) Here is the only directly executed code (not in a subroutine) apart from
+# the variable assignments at the top.
+qStart foobarMain "$@"    # Run command if and only if this script is the top level
+#for library, instead use: qStart - "$@"    # Run command/debugger if and only if this script is the top level
+
+##############################################################################
+############# (7) End of File... return what qStart returns...
+############# Do not put exit here!!! Do not put return here either!!!!
+############# Do not put anything else between here and the end of the file!
+##############################################################################
+# MBU Release mbu-20251115

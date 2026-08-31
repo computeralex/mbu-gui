@@ -1,2 +1,7 @@
 .worktrees/
 .superpowers/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.deb
+packaging/build/

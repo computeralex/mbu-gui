@@ -1,0 +1,4569 @@
+#!/bin/bash
+#
+# mbulib -- Merrill Backup Utility LIBrary
+# A collection of utilities for making backup copies of files
+# Author: Ted Merrill, January 2022, updated 2023-03-28
+#
+#       Please also see mbu-README.txt 
+#
+# MBU GOALS
+# -----------------------------------------------------------------
+# The goal of MBU software is to create backup disks that are 
+# functionally equivalent to the disk or disks they are backups of,
+# so that the backup disks themselves may be booted up at anytime
+# (with obvious file version issues if the original file changes
+# after doing the backup.
+#
+# Also, the backup disks can be easily examined and old files
+# retrieved individually where needed.
+#
+# All of this without having to halt or reboot the computer, and
+# with as much convenience as possible.
+#
+#
+# THINGS MBU DOES to accomplish the goals
+# --------------------------------------------------------
+# -- "Mount" file systems as necessary
+# -- Syncronizes backup files with active files.
+# -- Write backup date stamp files into the top directory of every
+#       source and target filesystem (this can be disabled).
+# -- Clone filesystem UUIDs to increase the chance that the backup
+#       will be bootable.
+# -- Rewrite the target EFI partition as a copy of the source
+# -- Recreate some /boot files
+# -- Potentially rewrite the hard disk partition table information
+#       
+#
+#
+# GENERAL USAGE CONSIDERATIONS 
+# -----------------------------------------------------------------
+# The backups must be put on separate disks from the original disk(s),
+# and the backup disks disconnected from the computer when not in use
+# (to be safe...), certainly before rebooting!
+#
+# Most features require that you be logged in as root, e.g. 
+#       sudo bash
+#
+# This code and programs based on it must be executed in the installation
+# directory.  For example, if the installation directory is $HOME/mbu
+# then you should do:
+#       cd $HOME/mbu
+# before continuing. You can execute programs there e.g. mbup is
+# executed as:
+#       cd $HOME/mbu
+#       ./mbup
+#
+# MBU expects exclusive use of (by default) the "mount" subdirectory
+# of the current directory (created as necessary).
+# Mount points are created and removed here.
+# BEWARE that if you use mbulib functions that mount or unmount partitions,
+# they will (at least attempt to) remove the mount point directories when done.
+# BEWARE, it is a really good idea to unmount the partitions before
+# disconnecting them (typically by calling mbuclean)... not necessary 
+# following a successful run of "mbup" or equivalent.
+#
+# You can run this script standalone or source it into your script
+# for easier use.
+# This script is sourced into several MBU scripts, esp. mbup.
+#
+# 
+# LIMITATIONS and REQUIREMENTS
+# ---------------------------------------------------------
+# -- Backups must be made to separate physical disks that can be easily
+#               disconnected from the computer when backups are finished.
+#               Do not reboot without disconnecting backups!
+# -- Disks must be partitioned using GPT not e.g. old obsolete MBR.
+# -- Backup partitions must be large enough (is that obvious?).
+# -- The most basic partitions of a partition set -- 
+#               root, boot (if used) and efi --
+#               must all live on the same disk.
+#               Other partitions can be on other disks, since they are
+#               simply found by MBU using their partition name and
+#               by software distributions using their file system uuid
+#               (which is cloned).
+# -- Partition names must be unique among all partitions present on 
+#               your computer at the same time (mounted or not).
+#               See below about naming rules.
+# -- Partition names must conform to the MBU standard where every
+#               partition name is composed of a partition set name
+#               followed by a hyphen and then a function name.
+#               For example, the root partition on the active
+#               set (which is mounted on /) might be called mydisk1-root
+#               and the corresponding backup partition (typically but
+#               not necessarily on another disk) might be called
+#               mydisk2-root.
+#               Partition names should use a hyphen only for this purpose,
+#               and should generally avoid any other puncuation and avoid
+#               any whitespace to avoid software issues.
+#               That said, certain characters such as "." are safe.
+# -- Partition set name -- in the above example, mydisk1 and mydisk2
+#               are partition set names.
+# -- Partition function name -- in the above example, "root" is the
+#               partition function name.
+# -- Filesystems managed must be ext* file systems 
+#               (except when writing EFI partition).
+# -- Changes to files being synced can result in the sync failing,
+#               necessitating a retry... although some retries
+#               are made automatically, which will likey fix the issue.
+# -- For standalone operation, this file must be called "mbulib"
+#               (see end of this file). You instead/also source this file
+#               into your scripts (recommended).
+#
+# RUNTIME CONFIGURATION
+# ---------------------------------------------------------
+# mbulib emits various messages for developer and user information;
+#       see qlib regarding how these are handled.
+#
+# mbulib uses a set of "global" variables, all of which have default values
+# that can be overrideen by setting them in advance in one of the following
+# ways:
+#       environmental variable set "forever" in your terminal shell session
+#               or in your script that invokes mbulib or that includes
+#               mbulib (if done before invoke or inclusion).
+#               Example: export qbug=y
+#       environmental variable set for the current command, where the command
+#               is an invoke of mbulib, or a call to an mbulib subroutine
+#               (the latter where mbulib was included)
+#               Example: qbug=y mbulib <mbu-subroutine> <arg>...
+#               Example: qbug=y <mbu-subroutine> <arg>... # inclusion only
+#
+#
+# TERMINOLOGY
+# -------------------------------------------------------
+# "Partition" is a portion of a "hard disk" that may hold a file system.
+#       A partition table at the front of a hard disk tells the location and
+#       sizes of the partitions.
+# "Partition set" is purely an MBU concept. The idea is that a number of
+#       partitions (usually but not necessarily on the same disk) are
+#       part of a set that will be either "active" (in use together) or
+#       a backup set (used for copying files to as a backup).
+# "Device" or "device file" almost always refer to a Linux "block device"
+#       which is a kernel device driver instance for a physical device or
+#       partition thereof capable of holding a filesystem. E.g. /dev/sda1
+#       For "hard" disks, we are almost always referring to partition
+#       devices, which subset a hard disk device to a particular partition.
+#
+#
+# Running this script stand-alone (directly)
+# ---------------------------------------------------------
+# You may invoke this script directly from the command line or from
+# a script you write, in the following form:
+#       ./mbulib <mbulib-subroutine-name> <arg>...
+# For a list of mbulib subroutines, peruse this file.
+# The exit code indicates success as for all linux programs.
+# If data is to be returned, it will be emitted to stdout at the end.
+# This can be confused with error and status messages, so if you really
+# just want to see the return data (or nothing), try:
+#       qerror=n quser=n mbulib <mbulib-subroutine-name> <arg>...
+#
+# Examples:
+#       mbulib mbuDirSync mydir1 mydir2
+# Variable overrides must be specified before the command, for that command
+# only, for example:
+#       qbug=y mbuDoRsyncVerbose=n mbulib mbuDirSync mydir1 mydir2
+# Or even:
+#       export qbug=y   # set for all subsequent calls
+#       export mbuDoRsyncVerbose=n   # set for all subsequent calls
+#       ./mbuulib mbuDirSync mydir1 mydir2
+#  which can all be done interactively for maximum joy or pain.
+#
+#
+#
+# Usage in YOUR backup script tuned for YOUR system:
+# -----------------------------------------------------------
+#
+# Make sure THIS script is marked executable and put in a directory
+# listed in your PATH variable so that it can be found easily.
+# (Or alternately, it can be included using it's full filepath).
+# This script must be named "mbulib" (see end of this file).
+#
+# In general it is wise to start YOUR script with 
+#     set -e
+# which will abort on unhandled errors and print commands executed...
+# This script will do this automatically but you could turn this off
+# after the inclusion of this script (not reccommended).
+# Optional, for script debugging, do
+#       set -x
+# to cause individual commands to be printed out (for debugging)
+# ... can be turned off again with:  set +x
+#
+# At the top of your script put any overrides for mbulib variables, e.g.
+#       qbug=y   # for certain mbulib debug messages
+#
+# Next at the top of YOUR script put the following to pull in mbulib:
+#            source ./mbulib
+# This INCLUDES mbulib into YOUR script.
+# NOTE that mbulib MUST be run from the mbu directory.
+# Then you can call the subroutines in THIS file from YOUR script.
+# You can override mbulib variables at any point in your script...
+# by directly setting them, or you can add in more debugability with
+# calls to qvarset.
+# A temporary override (limited to function scope) is done via e.g
+#       local qbug=y   # hides global def, but passed to subroutines
+# 
+#
+# Coding Style
+# ----------------------------------------------
+# This code is deliberately broken into lots of small subroutines, which
+# can be invidually tested by calling them as:
+#       mbulib <subroutine-name> <arg>...
+# When testing in this way,
+# if there is a result returned (via qresult) it is printed out in a
+# diagnostic, and the success of the call is also indicated.
+#
+# THERE is a bug? in bash regarding dynamically generated array names.
+# The following do NOT work: ${$a$b[$c]} ${"$a$b"[$c]} 
+# THe following does work: declare -n d=$a$b ; ${e[$c]}
+##############################################################################
+
+# For safety, abort on unhandled errors!
+set -eu
+
+### mbuOnce -- internal use to ensure we include this file only once ########
+if test -z "${mbuOnce:-}" ; then mbuOnce=y ;  else return 0 ; fi
+
+
+##############################################################################
+# mbulib variables -- you can override these in your script by setting them
+# in your script before including this file
+# SADLY, you cannot reliably force variables to have an empty value... beware!
+##############################################################################
+### General
+# mbuDir -- directory where mbu files are stored, default current working directory
+: ${mbuDir:=$(/bin/pwd)}
+# mbuMountDir -- directory where mbu temporary mount points are placed.
+#       MBU has exclusive use of this directory, including removing it.
+: ${mbuMountDir:="$mbuDir/mount"}
+# mbuLogDir -- directory where mbu log files are placed.
+: ${mbuLogDir:="$mbuDir/log"}
+mkdir -p "$mbuLogDir" || exit Cannot create $mbuLogDir
+# mbuOutDir -- directory where mbu output files are placed (usually tempory files)
+: ${mbuOutDir:="$mbuDir/out"}
+mkdir -p "$mbuOutDir" || exit Cannot create $mbuOutDir
+
+# mbuMasterLogFile records one or two lines per backup run.
+#    The first line is a START line, and the second, only if successful,
+#    is a DONE line.
+#    This file may be consulted to find past backup history
+: ${mbuMasterLogFile:=$mbuLogDir/mbu.log}
+# mbuBackupLatestLogFile records the diagostics from one backup session.
+: ${mbuBackupLatestLogFile:=$mbuLogDir/mbup-latest.log}
+# mbuFormatLatestLogFile records the diagostics from one backup session.
+: ${mbuFormatLatestLogFile:=$mbuLogDir/mbuformat-latest.log}
+
+
+# mbuask -- set 'y' to always ask before important top level operations,
+#                       such as actual backup or formatting.
+#       'n' to never ask, 'm' (maybe) to ask if auto detection fails.
+: ${mbuask:='y'}
+# mbudryrun -- set to "y" to not actually execute important commands
+#   (for debugging of script functionality).
+: ${mbudryrun:='n'}
+#
+### mbulib rsync variables:
+# mbuRsyncRetries -- integer for how many times to retry after rsync failure
+# This should usually be nonzero since rysnc is prone to failing due to
+# a "file changed" condition, which is typically fixed on a retry.
+: ${mbuRsyncRetries:=2}
+# mbuDoRsyncVerbose -- 'y' to cause rsync to print out files it changes, or 'n'
+: ${mbuDoRsyncVerbose:='y'}        
+# mbuDoRsyncChecksum -- force rsync to dive deeper
+#       'y' to do checksumming both sides instead of 'n' for using time/size
+: ${mbuDoRsyncChecksum:='n'}
+# mbuDoRsyncDryRun -- 'y' to prevent rsync from actually doing anything
+# (note that rsync won't actually run if $mbudryrun is 'y')
+: ${mbuDoRsyncDryRun:='n'}
+#
+### mbulib date stamp file variables
+# mbuDoDateStampWrite -- y to write date stamp file to be copied when syncing,
+#       or n to not
+: ${mbuDoDateStampWrite:='y'}
+# mbuDateStampName -- name of date stamp file to use
+: ${mbuDateStampName:='.mbu-datestamp'}
+#
+### mbulib file system uuid copy control
+# Do we copy filesystem id for regular file systems?
+: ${mbuDoFsUuidCopy:='y'}
+# Do we copy filesystem id when specially handling efi uuid during boot fixing?
+: ${mbuDoEfiUuidCopy:='y'}
+#
+
+##############################################################################
+# qlib variables that we may override ... and then include qlib
+##############################################################################
+
+
+#couldbe# qDiagnosticPrefix=${qDiagnosticPrefix:='MBU'}
+
+# assuming permanent installation of all components in 1 dir:
+source ./qlib || { echo "$0 : Run this in Installation Directory only - Bye!" ; exit 1; }
+
+
+##############################################################################
+# Miscellaneous mbu internal use 
+##############################################################################
+# mbuNameRef -- with bash one cannot directly create and use
+#       a manufactured name for an array, instead one needs to do it via
+#       a "nameref" ... this variable is used temporarily
+# This declaration is just here to document the usage of this name.
+# e.g.: declare -n mbuNameRef   -- outside of any function 
+# e.g.: local -n mbuNameRef  -- inside a function
+# Use it immediately after declaring it.
+
+
+##############################################################################
+# mbuFileSystemTypeIsMountable <fstype>   -- true iff fs type is mountable
+#       false otherwise.
+##############################################################################
+mbuFSMountableList="$(cat /proc/filesystems  | sed -e '/^nodev[[:space:]]*/d' -e 's/^[[:space:]]//' )"
+declare -A mbuFSMountable=( )
+for mbuTemp_fstype in $mbuFSMountableList ; do
+    mbuFSMountable[$mbuTemp_fstype]=y
+done
+mbuFileSystemTypeIsMountable()
+{
+    local fstype="$1"
+    local mountable=${mbuFSMountable[$fstype]:-}
+    if test "$mountable" = y ; then return 0 ; fi
+    qbug "Not a file system type: $fstype"
+    # Don't do qReturnFail or qerror... 
+    return 1    # failure
+}
+
+
+##############################################################################
+# mbuDevProperties -- table of disk and partition properties we care about
+#       Add properties here to have them automagically be made available
+#       by mbuDevRefresh*.
+#
+#       Index is our (mbu) property name. 
+#       Value is lsblk property name or the word "custom" for a few that
+#       are specially generated by mbuDevRefresh*.
+##############################################################################
+declare -A mbuDevProperties=(         \
+    [devtype]=TYPE        \
+    [devname]=KNAME       \
+    [devpath]=PATH        \
+    [parentname]=PKNAME   \
+    [parentpath]=custom   \
+    [partnum]=custom      \
+    [realpartname]=PARTLABEL  \
+    [partname]=custom     \
+    [partset]=custom      \
+    [partfnc]=custom      \
+    [settype]=custom       \
+    [partuuid]=PTUUID     \
+    [parttype]=PARTTYPE   \
+    [fslabel]=LABEL       \
+    [fsused]=FSUSED       \
+    [fsusedpercent]='FSUSE%'       \
+    [fsuuid]=UUID         \
+    [fssize]=FSSIZE       \
+    [fstype]=FSTYPE       \
+    [mountpt]=MOUNTPOINT  \
+    [mountpts]=MOUNTPOINTS \
+    [size]=SIZE           \
+)
+
+##############################################################################
+# Device state data, including:
+# mbuDDevs -- list of disk devices (not partitions) on system.
+#       Index is device name, value is device file path.
+# mbuDevs -- list of partition and entire disk devices on system.
+#       Index is device name, value is device file path.
+# mbuDevOrder -- indexed list of device names, in canonical order
+# mbuDevReverse -- convert devname into index into mbuDevOrder
+# mbuDevsFromPath -- list of disk partition devices on system
+#       Index is device file path, value is device name.
+# mbuDevProperties -- list of properties
+#       Index is MBU property name, value is lsblk property name or "custom"
+# mbuDevP_<property> -- property of disk device
+#       <property> is one of the keys for mbuDevProperties (see below).
+#       Index is device name, value is property value
+##############################################################################
+# Sadly, we (apparently) have to declare all our arrays here to avoid
+# syntax error complaints later on ... even though we redo it in mbuDevClean
+declare -A mbuDDevs
+declare -a mbuDevOrder
+declare -A mbuDevReverse
+declare -A mbuDevs
+declare -A mbuDevsFromPath
+# Here for a bunch of device property associative arrays:
+for property in ${!mbuDevProperties[@]} ; do
+    # bash doesn't support: declare -A mbuDevP_$property=( )
+    # instead we have to the following convoluted misery:
+    declare -n mbuNameRef=mbuDevP_$property
+    declare -A mbuNameRef
+done
+# mbuDevSets is an array indexed with valid set names
+declare -A mbuDevSets   # values are always always "y"
+mbuDevRefreshed=n   # setting this to n forces a refresh
+mbuDevPartNumHighest=0  # track highest partition number on any disk
+mbuDevRootDiskDev=''  # entire disk device that / is on
+mbuDevRootDev=''      # partition device name, that / is on
+mbuDevRootPName=''      # partition name that / is on
+mbuDevRootPFnc=''      # partition "function" of /
+mbuDevActiveSet=''      # name of active partition set (== that of "/")
+##############################################################################
+# mbuDevClean -- clear device property tables, always
+##############################################################################
+mbuDevClean()
+{
+    qEnter "$@"  # our standard way to begin a function
+    mbuDevActiveSet=''
+    mbuDevRootPFnc=''
+    mbuDevRootDev=''
+    mbuDevRootDiskDev=''
+    mbuDevRootPName=''
+    mbuDevRefreshed=n
+    mbuDevPartNumHighest=0
+    mbuDevOrder=( )
+    mbuDevReverse=( )
+    mbuDDevs=( )
+    mbuDevs=( )
+    mbuDevsFromPath=( )
+    mbuDevSets=( )
+    local property
+    for property in ${!mbuDevProperties[@]} ; do
+        # bash doesn't support: declare -A mbuDevP_$property=( )
+        # instead we have to the following convoluted misery:
+        local -n mbuNameRef=mbuDevP_$property
+        mbuNameRef=( )
+    done
+    qReturnOk
+}
+##############################################################################
+# mbuDevDump -- for debugging acquisition of device properties
+#       Emits to stdout
+#       Options: 
+#               -r to force a refresh
+##############################################################################
+mbuDevDump()     # for debugging acquisition of device properties
+{
+    qEnter "$@"  # our standard way to begin a function
+    local qbug=$qbug  # shadow global variable
+    qbug=y   # see all debug messages
+    while test $# -gt 0 ; do
+        local opt="${1:-}" ; shift||true
+        case "$opt" in
+            '-r') mbuDevRefreshForce
+            ;;
+            *) qerror "IGNORING Invalid option $opt"
+            ;;
+        esac
+    done
+    echo "======== BEGIN dump of property tables ==========="
+    if ! test "$mbuDevRefreshed" = y ; then
+        echo "NOTE!!!! Use -r to force refresh !!!"
+        echo
+    fi
+    declare -p mbuDevProperties       # print
+    echo
+    declare -p mbuDevOrder  # print
+    echo
+    declare -p mbuDevReverse  # print
+    echo
+    declare -p mbuDDevs     # print
+    echo
+    declare -p mbuDevs     # print
+    echo
+    declare -p mbuDevsFromPath     # print
+    echo
+    local property
+    for property in ${!mbuDevProperties[@]} ; do
+        local -n mbuNameRef=mbuDevP_$property
+        declare -p ${!mbuNameRef}      # print
+        echo
+    done
+    echo "Highest part num is $mbuDevPartNumHighest"
+    if ! test "$mbuDevRefreshed" = y ; then
+        echo "NOTE!!!! Use -r to force refresh !!!"
+        echo
+    fi
+    echo "======== END dump of property tables ==========="
+    qReturnOk ; return 0
+}
+##############################################################################
+# mbuDevRefreshForce -- populate device data cache, always
+##############################################################################
+mbuDevRefreshForce()
+{
+    qEnter "$@"  # our standard way to begin a function
+    qbug "Re-reading system disk information"
+    mbuDevClean
+    local lastdiskpath=''   # device file path for last disk seen
+    lsblkout=$(lsblk -b -n -o TYPE,KNAME,PATH,PKNAME)
+    local -a lines
+    # note: read complains because it hits EOF, even though this is expected
+    IFS=$'\n' read -r -d '' -a lines <<<"$lsblkout" || 
+            qbug "Ignoring bogus bash read error $? here."
+    local ndev=0        # devices seen so far
+    local lineno
+    for lineno in ${!lines[@]} ; do
+        local line="${lines[$lineno]}"
+        local devtype
+        local devname
+        local devpath
+        local parentname
+        local junk
+        # NOTE parentname may be empty... so don't put anything after that!
+        <<<$line read -r devtype devname devpath parentname || 
+                qbug "Ignoring bash read error $? here."
+        #doesn't work first time:# mbuDevReverse[$devname]=${#mbuDevOrder}
+        mbuDevReverse[$devname]=$ndev
+        ndev=$((ndev + 1))
+        mbuDevOrder+=( $devname )
+        mbuDevs[$devname]=$devpath
+        mbuDevsFromPath[$devpath]=$devname
+        mbuDevP_devtype[$devname]=$devtype
+        mbuDevP_devname[$devname]=$devname
+        mbuDevP_devpath[$devname]=$devpath
+        mbuDevP_parentname[$devname]=$parentname
+        mbuDevP_partnum[$devname]='0'      # HACK Assume 0 is invalid partition number
+        # ... actually, 0 makes a lot of sense for the parent drive.
+        if test "$devtype" = part ; then
+            # NOTE that lsblk always gives the parent before the child, so it is defined
+            mbuDevP_parentpath[$devname]=${mbuDevs[$parentname]}
+            # Find the partition number of the partition.
+            # HACK 
+            # Sadly, there does not appear to be a totally future proof
+            # way to do this.
+            # lsblk does NOT have an option to show the partition number.
+            # It IS possible to obtain the minor number, and historically
+            # the low four bits (mod 16) of the minor number are the 
+            # partition number.
+            # Or one can assume that the device name of the partition
+            # ends with the partition number (preceded by non digits!).
+            # Typical ways this is done:
+            #   partition 2 of sda is sda2
+            #   partition 2 of nvme0n1 is nvme0n1p2 (note the extra "p")
+            # WAS BUT DOESN"T ALWAYS WORK: local partnum=${devname#$parentname}
+            local partnum=`echo "$devname" | sed -E -e 's/.*[^0-9]+([0-9]+$)/\1/'`
+            mbuDevP_partnum[$devname]=$partnum
+            if test "$partnum" -gt "$mbuDevPartNumHighest" ; then
+                mbuDevPartNumHighest="$partnum"
+            fi
+        elif test "$devtype" = disk ; then
+            lastdiskpath=$devpath
+            mbuDDevs[$devname]=$devpath
+        fi
+    done
+    # Now chase down the miscellaneous properties
+    # We do them one at time using lsblk because some are empty or even contain spaces
+    # and that would not parse well.
+    local property      # mbu property name
+    for property in ${!mbuDevProperties[@]} ; do
+        local lproperty=${mbuDevProperties[$property]}  # lsblk property name
+        if test "$lproperty" = custom ; then    # handled specially 
+            continue
+        fi
+        # Ask for the device name and the property for all devices
+        # The property may be empty or contain spaces.
+        local lsblkout=$( lsblk -b -n -o KNAME,$lproperty )
+        local -a lines
+        # note: read complains because it hits EOF, even though this is expected
+        IFS=$'\n' read -r -d '' -a lines <<<"$lsblkout" || 
+                qbug "Ignoring bogus bash read error $? here."
+        local lineno
+        for lineno in ${!lines[@]} ; do
+            local line="${lines[$lineno]}"
+            local devname
+            local value
+            <<<$line read -r devname value || qbug '"gnoring bash read error $? here."
+            if test -z "$devname" ; then qerror ; continue; fi   # shouldn't happen
+            local -n mbuNameRef=mbuDevP_$property
+            mbuNameRef["$devname"]="$value"
+        done
+    done
+    # Now fix up some properties
+    for devname in ${!mbuDevs[@]} ; do
+        # provide all partitions with a MBU compliant partition name even if
+        # they don't really have one.
+        # This works fine for future searching using the same made up
+        # partition names AND we don't run afowl of duplicationg names
+        # or ambiguities.
+        local devtype=${mbuDevP_devtype[$devname]}
+        local realpartname=${mbuDevP_realpartname[$devname]}
+        local partnum=${mbuDevP_partnum[$devname]}
+        local pset=${realpartname%%-+(?)}
+        local pfnc=${realpartname#+(?)-}
+        if test -z "$realpartname" ; then
+            # Unnamed partition or non-partition e.g. entire disk
+            if test "$devtype" = part ; then
+                pset=NONAME
+                pfnc="$partnum"
+            elif test "$devtype" = disk ; then
+                pset=DISK
+                pfnc="$devname"   # OUCH using dynamic assignment is bad
+            else
+                pset=NONDISK
+                pfnc="$devname"   # OUCH using dynamic assignment is bad
+            fi
+        elif test "$pset" = "$realpartname" ; then
+            # No hyphen. Use partname as pfnc.
+            pset=NONAME
+        else
+            true        # okay as is
+        fi
+        local partname="$pset-$pfnc"
+        mbuDevP_partname[$devname]="$partname"
+        mbuDevP_partset[$devname]="$pset"
+        if test "$devtype" = part ; then
+            mbuDevSets[$pset]=y
+        fi
+        mbuDevP_partfnc[$devname]="$pfnc"
+        # fsusedpercent -- oddly, lsblk reports numbers significantly
+        # higher than simply dividing fsize by size.
+        # I'll go with the more conservative estimate!
+        # Note... most fs parameters only available while mounted.
+        local fsusedpercent=${mbuDevP_fsusedpercent[$devname]}
+        fsusedpercent=${fsusedpercent%?}   # strip percent sign off
+        mbuDevP_fsusedpercent[$devname]="$fsusedpercent"
+        # Find the root partition
+        if test "${mbuDevP_mountpt[$devname]}" = '/' ; then
+            mbuDevRootDev="$devname"
+            mbuDevRootPName="${mbuDevP_partname[$devname]}"
+            mbuDevActiveSet="${mbuDevP_partset[$devname]}"
+            mbuDevRootPFnc="${mbuDevP_partfnc[$devname]}"
+            mbuDevRootDiskDev="${mbuDevP_parentname[$devname]:-}"
+        fi
+    done
+    # All done refreshing our data!
+    mbuDevRefreshed=y
+    if test "$qbug" = y ; then
+        mbuDevDump >&2
+    fi
+    qReturnOk ; return 0
+}
+##############################################################################
+# mbuDevRefreshNeed - mark as needing a refresh
+#       Clears device property tables to be on the safe side.
+##############################################################################
+mbuDevRefreshNeed()
+{
+    mbuDevClean # to be on safe side
+    mbuDevRefreshed=n   # setting this to n forces a refresh
+}
+##############################################################################
+# mbuDevRefreshMaybe -- populate device property tables (if it seems needed)
+##############################################################################
+mbuDevRefreshMaybe()         # optimized version
+{
+    qEnter "$@"  # our standard way to begin a function
+    if test "$mbuDevRefreshed" = y ; then
+        qReturnOk "Optimized out." ; return 0
+    fi
+    if ! mbuDevRefreshForce ; then   # shouldnt happen?
+        qReturnFail
+        return 1
+    fi
+    qReturnOk ; return 0
+}
+
+
+##############################################################################
+# mbuDevFind [<option>]... [<spec>]...
+#       Find disk/partition(s) based on search specification(s),
+#       the canonical device name(s) is/are returned in canonical order.
+#       The device names are returned separated by spaces.
+#       Clearly invalid specs result in abort (qReturnFail, return 1)
+#       unless modified by the "ignore" option.
+#       If there are no matches, the empty string is returned.
+#       If match=unique is given it is an error if there not exactly 1 match.
+#       If match=nonmultiple is given, it is an error if there
+#       are more than one match
+#   <option> is one of:
+#       match={unique|nonmultiple|multiple}
+#           unique  -- error unless there is exactly one match.
+#           nonmultiple -- error if more than one match
+#           multiple -- provide zero or more results (default option)
+#       ignore={n|y|u} -- y to silently ignore errors, u to notify user
+#   <spec> identifies the disk or partition. 
+#       See mbuDevFind_SpecHelp (below).
+#   
+#   Return value is list of device names, via qresult.
+##############################################################################
+mbuDevFind_SpecHelp='
+Disks and partitions may be identified by a specification.
+A specification is a single word (i.e. contains no space characters).
+A specification may match zero, one or multiple disks and partitions.
+Each specification is evaluated in this order until a match is found (or not):
+    (1) Valid device name of an attached disk or partition, e.g. sdb2
+    (2) Valid device filepath of an attached disk or partition, e.g. /dev/sdb2
+    (3) An file path beginning with a slash (/) .  Follows symlinks.
+        If it resolves to a valid device filepath, the device name is used.
+        Otherwise, it must resolve to a regular file or a directory and means
+        the partition holding the file/directory (see filepath= below).
+        Search ends.
+    (4) A word with an equal sign in it, e.g. partset=myset .
+        The part before the equal sign is the "key" and after is the "value".
+        Supported keys:
+            filepath -- "value" is a path to a file residing in a partition,
+                which is chosen.  If no such file, the search ends.
+                Note: follows symlinks. The file path does not need to begin 
+                with, or contain slashes.
+                The file can be of any type: regular, directory, device file etc.
+                The partition holding the file is selected, even if the file
+                is a device file.
+            devpath -- "value" is path (could be symlink) to device file.
+                The device file must be for a disk/partition, which is selected.
+                If no such (or invalid) device file, the search ends.
+            (property) -- a valid mbu device property name.
+                All devices with the value of that property matching the given
+                value are selected.
+                Examples of properties include: 
+                    partname -- "value" is partition name
+                    partset -- "value" is the partition set.
+                Search ends.
+    (5) A word beginning with a hyphen.
+        (5a) -all  -- selects all partition devices (not disk devices).
+        (5b) -active -- selects partition devices of the active set. 
+        (5c) -backup -- selects partition devices of possible backup sets. 
+        Anything else does nothing.
+        Search ends in all cases.
+    (6) A word containing but not beginning with a hyphen, 
+        assumed to specify a partition name (MBU style).
+        Selects partition device(s?) with this name, or ignored (*)
+        Search ends.
+        (*) Currently, silently ignored if not found. 
+        TODO: error or warn if not found
+    (7) A valid p. set name, selects devices of the given set and search ends.
+        If not a valid set name, continue searching.
+    (8) Anything else:
+        (If you dont have a valid set name that conflicts, you may reach:)
+        (8a) all  -- selects all partition devices (not disk devices). 
+        (8b) active -- selects partition devices of the active set. 
+        (8c) backup -- selects partition devices of possible backup sets. 
+        Anything else does nothing.  Search ends.
+'  # mbuDevFind_SpecHelp
+mbuDevFind()
+{
+    qEnter "$@"  # our standard way to begin a function
+
+    # Options
+    # match is one of: 
+    #   unique: exactly 1 ; nonmultiple: 0 or 1  ; multiple: anything
+    # At the end of processing we check and produce error accordingly.
+    local match='multiple'  
+    # ignore: how to handle errors
+    #   Does NOT apply to match violation (option match).
+    # y=ignore errors, u=ignore errors except tell user, n=die on errors
+    local ignore=n      
+    qOption "match,ignore," "$@" ; shift $qresult
+
+    # Process options
+    local diagfnc=qerror
+    local die=y   # die on failure?
+    case "$ignore" in
+        y) diagfnc=qbug ; die=n ;;
+        u) diagfnc=quser ; die=n ;;
+        n) diagfnc=qReturnFail ; die=y ;;
+        *) qReturnFail "Invalid arg ignore=$ignore" ; return 1 ;;
+    esac
+    case "$match" in
+        multiple|unique|nonmultiple) true ;;
+        *) qReturnFail "Bad option match=$match" ; return 1 ;;
+    esac
+
+    mbuDevRefreshMaybe       # ensure our info is up to date
+
+    local result=''   # Note: put a space before each addition to result
+    local devspec
+    for devspec in "$@" ; do
+        qbug "At devspec=$devspec"
+        # Special shortcut case: if our arg is valid device name
+        local devname="$devspec"  # guess
+        local devpath="${mbuDevs[$devname]:-}"
+        if test -n "$devpath" ; then
+            qbug "Is a devname: $devname"
+            result+=" $devname" 
+            continue
+        fi
+    
+        # Short cut if our arg is valid partition device path
+        local devpath="$devspec"      # guess
+        local devname="${mbuDevsFromPath[$devpath]:-}"
+        if test -n "$devname" ; then
+            qbug "devpath $devpath -> devname: $devname"
+            result+=" $devname" 
+            continue
+        fi
+    
+        # Get or make up an idtype and id value from the spec
+        local idtype=''
+        local id=''
+        case "$devspec" in 
+            /*) # absolute path of valid device file, or any existing regular file or directory
+                if test -b "$devspec" ; then
+                    idtype="devpath" ; id="$devspec"
+                    qbug "is a devpath $devspec"
+                    # fall through...
+                elif test -f "$devspec" || test -d  "$devspec" ; then
+                    idtype='filepath' ; id="$devspec"
+                    qbug "is a filepath $devspec"
+                    # fall through...
+                else
+                    $diagfnc "File not found: $devspec"
+                    if test "$die" = y ; then return 1 ; fi
+                    continue
+                fi
+            ;;
+            ''|=*)
+                $diagfnc "Invalid: $devspec"
+                if test "$die" = y ; then return 1 ; fi
+                continue
+            ;;
+            *=*) # <idtype>=<id>
+                idtype=${devspec%%=+(?)}
+                id=${devspec##+(?)=}
+                qbug "is a id=idtype: $devspec"
+                # fall through
+            ;;
+            -all)  # all partitions (not whole disks)
+                idtype=devtype
+                id=part
+                qbug "-all selected"
+                # fall thru
+            ;;
+            -active) 
+                idtype=settype
+                id=active
+                # fall through
+            ;;
+            -backup) 
+                idtype=settype
+                id=backup
+                # fall through
+            ;;
+            -*)
+                $diagfnc "Invalid: $devspec"
+                if test "$die" = y ; then return 1 ; fi
+                continue
+            ;;
+            *-*)  # partition name of form <set>-<fnc>
+                idtype=partname ; id="$devspec"
+                # fall through
+            ;;
+            *)   # something else!
+                # Is it a valid set name?
+                if test -n "${mbuDevSets[$devspec]:-}" ; then
+                    idtype=partset
+                    id="$devspec"
+                    qbug "Found set name $id"
+                    # fall through
+                else
+                    # Here if there is no chance with name collision above
+                    case "$devspec" in 
+                        all)    # all partitions, but not disk devices
+                            idtype=devtype
+                            id=part
+                            qbug "-all selected"
+                            # fall thru
+                        ;;
+                        active) 
+                            idtype=settype
+                            id=active
+                            # fall through
+                        ;;
+                        backup) 
+                            idtype=settype
+                            id=backup
+                            # fall through
+                        ;;
+                        *)
+                            $diagfnc "Invalid: $devspec"
+                            if test "$die" = y ; then return 1 ; fi
+                            continue
+                        ;;
+                    esac
+                fi
+            ;;
+        esac
+        if test -z "$idtype" ; then
+             $diagfnc  "Bad first part of: $devspec"
+             if test "$die" = y ; then return 1 ; fi
+             continue
+        fi
+        if test -z "$id" ; then
+             $diagfnc "Bad second part of: $devspec"  #  unexpected
+             if test "$die" = y ; then return 1 ; fi
+             continue
+        fi
+    
+        # Process the id value according to the id type
+        case "$idtype" in 
+            filepath)
+                # Return device filepath for partition that the file is on
+                # even if it is a block device.
+                local filepath="$id"
+                if ! test -e "$filepath" ; then
+                    $diagfnc "File not found: $filepath"
+                    if test "$die" = y ; then return 1 ; fi
+                    continue
+                fi
+                # follow symlinks, resolve working dir
+                local realfilepath=$(realpath "$filepath" || true)    
+                # In the case of specified block device, df would tell us about the 
+                # device and not the device file, so looking at directory fixes:
+                local dirpath="$realfilepath"
+                if ! test -d $dirpath ; then
+                    dirpath=$(dirname $realfilepath || true)
+                fi
+                if test -z "$dirpath" ; then        # shouldnt happen
+                    qReturnFail "Unexpected error on: $filepath" ; return 1
+                    continue
+                fi
+                if ! test -e "$dirpath" ; then      # shouldnt happen?
+                    qReturnFail " Unexpected, No directory for file: $filepath" ; return 1
+                    continue
+                fi
+                qbug Examining directory $dirpath
+                local devpath=$(df --output=source "$dirpath" | sed '1d')
+                if test -z "$devpath" ; then        # shouldnt happen
+                    qReturnFail "Unexpected error for file: $filepath" ; return 1
+                    continue
+                fi
+                local devname="${mbuDevsFromPath[$devpath]}"
+                if test -n "$devname" ; then
+                    qbug "file $filepath is on dev $devname"
+                    result+=" $devname"
+                    continue
+                fi
+                $diagfnc "Not found: $filepath"
+                if test "$die" = y ; then return 1 ; fi
+                continue
+            ;;
+            devpath)        # unlike the property, this resolves symlinks
+                local devpath="$id"
+                devpath=$(realpath "$devpath" || true)      # follow symlinks
+                local devname=${mbuDevsFromPath[$devpath]}
+                if test -n "$devname" ; then
+                    qbug "devpath $devpath -> devname $devname"
+                    result+=" $devname"
+                    continue
+                fi
+                $diagfnc "Not a disk/partition device: $devpath"
+                if test "$die" = y ; then return 1 ; fi
+                continue
+            ;;
+            devname)        # could find it as property...
+                local devname="$id"
+                local devpath=${mbuDevs[$devname]}
+                if test -n "$devpath" ; then
+                    qbug "valid devname: $devname"
+                    result+=" $devname"
+                    continue
+                fi
+                $diagfnc "Not a valid partition device name: $devname"
+                if test "$die" = y ; then return 1 ; fi
+                continue
+            ;;
+            *)      # MUST be property=value
+                local property="$idtype"
+                local matchvalue="$id"
+                local junk="${mbuDevProperties[$property]:-}"
+                if test -z "$junk" ; then
+                    $diagfnc "Bad arg / No such property: $property"
+                    if test "$die" = y ; then return 1 ; fi
+                    continue
+                fi
+                local -n mbuNameRef=mbuDevP_$property
+                for devname in ${mbuDevOrder[@]} ; do
+                    local value=${mbuNameRef[$devname]}
+                    if test "$value" = "$matchvalue" ; then
+                        qbug "match property $property value $value : $devname"
+                        result+=" $devname"
+                    fi
+                done
+                continue
+            ;;
+        esac    # idtype
+    done        # loop through args
+
+    # Now sort into canonical order and eliminate redundancies
+    local -a selected=( )       # per device index e.g. mbuDevOrder{}
+    local devname
+    for devname in $result ; do
+        local idev=${mbuDevReverse[$devname]}
+        selected[$idev]="$devname"      # so inserted in correct order
+    done
+    result="${selected[*]}"       # put names into a string
+
+    # Some last optional checks
+    case "$result" in
+        '')     # empty
+            qbug "No matches found"
+            case "$match" in
+                multiple) true ;;
+                unique) 
+                    qReturnFail "No match found for: $*"
+                    return 1 
+                ;;
+                nonmultiple) true ;;
+            esac
+        ;;
+        *' '*)  # embedded space -- more than one match
+            qbug "More than one match found: $result"
+            case "$match" in
+                multiple) true ;;
+                nonmultiple|unique) 
+                    qReturnFail "More than one match found for: $*" 
+                    return 1  
+                ;;
+            esac
+        ;;
+        *)      # exactly one
+            qbug "One match found: $result"
+            true        # good in all cases
+        ;;
+    esac
+    qReturnOk "$result" ; return 0
+}
+
+##############################################################################
+# mbuDevProperty [<opt>...] <property> [<devspec>]...   -- 
+#                       determine a property of device(s)
+#   This improves direct access to the MBU device state arrays by adding
+#   device search and checking and other checks.
+#
+#   Options are:
+#       match=<match>  -- passed to mbuDevFind
+#               NOTE!!!: the default is match=unique (exactly one match)
+#               Do not use other matching options if any of the values might
+#               be empty, as the results will be confused.
+#       ignore={n|y|u} -- y to silently ignore match errors, u to notify user
+#               (see mbuDevFind).
+#   <property> is the MBU name of a property, see mbuDevProperties .
+#       E.g.: 
+#       devpath -- get path to a partition device file, e.g. /dev/hda2
+#           Note that <devpath> may be a symlink, but return is always true path.
+#       devname -- get simple name of partition device, e.g. hda2
+#       partname -- get partition name
+#   <devspec> -- any spec acceptable to mbuDevFind
+#
+#   Use of multiple <devspec>, or <devspec> which select multiple devices,
+#   can be useful for some queries, for example:
+#       mbuDevProperty match=multiple partname devset=myset
+#   returns the partition names for partitions with set "myset".
+#
+#   Return result (if success) is property value, via qresult.
+#   For properties that have one-word values, the result will have one word
+#   per device selected, and in device canonical order.
+#   Return status is 0 for success, 1 for failure.
+##############################################################################
+mbuDevProperty()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local match=unique      # default, produce exactly one result
+    local ignore=n          # see mbuDevFind
+    qOption "match,ignore," "$@" ; shift $qresult
+
+    # Positional args after options: first is property
+    local property=${1:-}; shift||true
+    if test -z "$property" ; then
+        qReturnFail "Missing arg 1" ; return 1
+    fi
+    if test -z "${mbuDevProperties[$property]:-}" ; then
+        qReturnFail "Invalid property: $property" ; return 1
+    fi
+    local -n mbuNameRef=mbuDevP_$property
+
+    # then 0 or more dev specs
+    if ! mbuDevFind ignore="$ignore" match="$match" "$@" ; then
+        qReturnFail "device(s) not found using: $*" ; return 1 ; fi
+    local devnames ; qResult devnames
+
+    local values=''    # output
+    local devname
+    for devname in $devnames ; do
+        local value=${mbuNameRef[$devname]}     # get property value
+        qbug "devname=$devname property=$property value=$value"
+        values+=" $value"
+    done
+    qSTrim v=values
+    qReturnOk "$values"   ; return 0
+}
+
+
+
+##############################################################################
+# mbuCleanMountPt <mountpt> [<option>...]
+#       Unmounts device that we may have mounted on given mountpoint
+#               if any, AND removes the given file/directory.
+#               (Recursively unmounts any further down mount points)
+#               Does nothing, successfully, if the mount point does not exist.
+#               NOTE that the intended device may be mounted elsewhere
+#               instead of at the given mounpt: that is not our problem here.
+#       <mountpt> is path where we may have mounted a partition 
+#           (do NOT give the dev file!!!)
+#       <option>  -- No options defined yet
+##############################################################################
+mbuCleanMountPt()
+{
+    qEnter "$@"  # our standard way to begin a function
+    while test $# -gt 0 ; do
+        local option="$1" 
+        case "$option" in 
+            # Future options here?  don't forget to add a shift
+            *) break   # not an option, fall through
+            ;;
+        esac
+    done
+    local dir=${1:-} ; shift||true
+    if test -z "$dir" ; then
+        qReturnFail "missing mountpt arg" ; return 1
+    fi
+    if test "$mbudryrun" = y ; then  # pretend success on dry run
+        qbug "DONE FAKE RUN $dir"
+        break
+    fi
+    # Just remove it if it is not a mount point
+    if test -L "$dir" ; then    # symbolic link
+        if ! rm "$dir" ; then
+            # Failed to remove symbolic link?
+            qReturnFail "cannot remove symbolic link: $dir"
+            return 1
+        else quser "Removed symbolic link $dir"
+            qReturnOk; return 0
+        fi
+    fi
+    # If it doesn't exist, we are good
+    if ! test -e "$dir" ; then       # caution -e doesn't always match symlinks, see above with -L
+        qbug "no unmount needed, END $dir "
+        qReturnOk; return 0
+    fi
+    # If it is some other non-directory...
+    if ! test -d "$dir" ; then
+        if ! qrun rm "$dir" ; then
+            # Failed to remove non-directory
+            qReturnFail "cannot remove: $dir"
+            return 1
+        else qbug "removed $dir"
+            qReturnOk; return 0
+        fi
+    fi
+    # Here it must be a directory
+    qrun rmdir "$dir" 2>/dev/null || true   # will remove only empty, unmounted dir
+    if ! test -e "$dir" ; then
+        qbug "no unmount needed, END $dir "
+        qReturnOk; return 0
+    fi
+    qbug "cannot simply just remove $dir"
+    # It could be still here because, although unmounted, it is not empty.
+    # Should this happen, we will fail below and the user will have to fix things
+    # somehow.
+
+    mbuDevRefreshNeed   # an umount will change the dev info
+    # HACK: For some reason, we get "file system busy" errors
+    # for a short period of time, but only sometimes.
+    # The following retry loop works around this.
+    # I've seen a max of one retry so far...
+    local retries=x
+    while ! qrun umount --recursive "$dir" ;  do
+        if test $retries = xxxxxxxx ; then
+            qReturnFail "Failed to umount $dir"
+            return 1
+        else
+            quser "WAITING for umount of $dir"
+            qrun sleep 1s
+            retries=x$retries
+        fi
+    done
+    # Remove directory after unmounting... proves we are doing things right.
+    # Removing this feature would have major implications to the design,
+    # so don't do that lightly!
+    if ! qrun rmdir "$dir" ;  then
+        qReturnFail "Failed to remove old mount point $dir"
+        return 1
+    fi
+    if test -d "$dir" ; then
+        # HACK Somehow the directory sometimes exists for a while after removing it,
+        # thus this wait.   IS THIS FOR REAL? doesn't hurt...
+        quser "WAITING FOR rmdir of $dir!"
+        sleep 3s
+    fi
+    if test -d "$dir" ; then
+        qReturnFail "FAILED TO REMOVE MOUNTPT DIR: $dir"
+        return 1
+    fi
+    quser "Unmounted and removed mount point directory: $dir"
+    qReturnOk ; return 0
+}
+##############################################################################
+# mbuClean -- clean anything that might be left over from previous session
+#       ASSUMES use of mount point directory $mbuMountDir
+##############################################################################
+mbuClean_Help='
+Unmount all MBU mounted partitions and remove mount directory
+Options:
+    quiet={y|n}   -- y to enable less verbosity
+    help|-help|--help  - for this emessage (only)
+
+This works ONLY on the MBU mount directory, does NOT affect any other mounts.
+
+Unmounts any partitions mounted below the MBU mount directory;
+this can fail for various reasons, but especially if the mounted partition 
+is busy, including where a process has a subdirectory of the partition as its
+current working directory.
+
+Removes from the MBU mount directory all mount points, symbolic links,
+extraneous files and empty mount point directories;
+then removes the MBU mount directory as well.
+Fails if, after apparently unmounting, any files remain beneath a mount point
+directory... this is for your own protection to avoid going really wrong.
+'
+mbuClean()
+{
+    qEnter "$@"  # our standard way to begin a function
+    # Primary local variables:
+    local result=''   # what we will return if successful
+
+    # Get options:
+    local dohelp=n
+    local quiet=n
+    local statusfnc=quser
+    qOption 'help:dohelp=y,-help:dohelp=y,--help:dohelp=y,quiet,' "$@"
+    shift $qresult
+    if test $# -gt 0 ; then qReturnFail "Extra args at: $*" ; return 1; fi
+    if test "$quiet" = y ; then statusfnc=qbug ; fi
+
+    # Help option
+    if test "$dohelp" = y ; then
+        qprintf "%s\n" "$mbuClean_Help" ; qReturnOk ; return 0
+    fi
+
+    $statusfnc "BEGIN cleaning: $mbuMountDir"
+    # Try only,
+    # remove entire mount directory excluding mount points and 
+    #   files beneath subdirectories
+    # CAREFUL avoid recursive remove because the potential for damage
+    # is enormous!
+    qrun rm -f "$mbuMountDir/*" || true   # remove symlinks etc ?
+    qrun rm --one-file-system -df "$mbuMountDir/*" || true
+    qrun rmdir $mbuMountDir/* 2>/dev/null || true    # redundant, but...
+    qrun rmdir "$mbuMountDir" 2>/dev/null || true    # remove top directory?
+    qFileFind "$mbuMountDir"/'*'  ; local dirs ; qResult dirs
+    local dir=''
+    local errors=''
+    for dir in $dirs ; do
+        # Note mbuCleanMountPt also removes the directory
+        if ! mbuCleanMountPt $dir ; then
+            qReturnFail "failed to unmount $dir"
+            errors=x"$errors"
+        else
+            qbug "Unmounted and removed $dir OK"
+        fi
+    done
+    # Try only,
+    # remove entire mount directory excluding mount points and subdirectory files
+    qrun rm --one-file-system -df "$mbuMountDir/*" || true
+    qrun rmdir "$mbuMountDir" 2>/dev/null || true
+    if test -d "$mbuMountDir" ; then
+        qReturnFail "could not remove: $mbuMountDir (ignoring error?)"
+    fi
+    if ! test -z "$errors" ; then
+        qReturnFail "not all mount points unmounted or removed"
+        return 1
+    fi
+    
+    $statusfnc "FINISHED and removed $mbuMountDir OK"
+    $statusfnc "You should be able to detach backup devices safely."
+    qReturnOk ; return 0
+}
+
+
+##############################################################################
+# mbuDevMount <devspec> <dir> [-unmount] -- mount partion on mount point directory
+#       <devspec> is ala mbuDevFind match=unique,
+#               may be the filepath to device file for partition, .e.g. /dev/sdb1
+#               or more complicated, see mbuDevFind.
+#               Note, It may be a symlink to the device file.
+#       <dir> is filepath of directory to mount on to... if not existing,
+#               the directory is created if possible.
+#               NOTE: On failure, the directory is removed as possible.
+#       With option "-unmount", will umount the directory (if mounted on)
+#       before mounting.
+#       Mounts in read/write mode with no special options.
+#       Arguably it might be good sometimes to mount the source read-only, 
+#       but this rubs against some of the features of mbulib.
+#       Refer to unix/linux documentation for the quirks of "mounting".
+#
+# MBU only uses this beneath mbuDevMountAuto but you could use it for your
+# own other use....
+##############################################################################
+mbuDevMount()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local devspec=${1:-} ; shift||true
+    if test -z "$devspec" ; then qReturnFail "arg 1" ; return 1 ; fi
+    local dir=${1:-} ; shift||true
+    if test -z "$dir" ; then qReturnFail "arg 2" ; return 1 ; fi
+    local option=${1:-} ; shift||true
+    if ! mbuDevFind match=unique "$devspec" ; then 
+        qReturnFail "could not find device based on: $devspec"
+        return 1
+    fi
+    local devname ; qResult devname
+    local devpath=${mbuDevs[$devname]}
+    if test "$option" = "-unmount" ; then
+        if ! mbuCleanMountPt $dir ; then 
+            qReturnFail "already mounted and cannot umount? : $devname on $dir"
+            return 1
+        fi
+    fi
+    # NEVER mount something that is already mounted! it is "legal" but leads
+    # to endless problems
+    if ! mbuDevProperty mountpt $devname ; then 
+        qReturnFail "$devspec err 1" ; return 1;       # should not happen?
+    fi
+    local mountpt ; qResult mountpt
+    if ! test -z "$mountpt" ; then
+        qReturnFail "$devspec ($devname) is already mounted on $mountpt"
+        return 1
+    fi
+    # perhaps optional... create the mount point directory (even if dry run)
+    local created_mountpt=n
+    if ! test -d "$dir" ; then
+        if ! mkdir -p $dir ; then   # NOTE: mkdir -p is happy with pre-existing dir
+            qReturnFail "Could not create mount point $dir"
+            return 1
+        fi
+        # and make double sure it really exists
+        if test ! -d "$dir" ; then
+            qReturnFail "Failed to create mount point directory: $dir"
+            return 1
+        fi
+        # Optional? make the directory non-executable to prevent accidently
+        # putting files into it... sadly, this doesn't help if we are root.
+        # ... although it does give a clue if you list the mount directory.
+        chmod ugo-rwx "$dir" || qerror "chmod ugo-rwx failed on $dir"
+        created_mountpt=y
+    fi
+    # Mount the file system so we can actually copy files in it etc.
+    mbuDevRefreshNeed   # a mount will change the dev info
+    qbug "Running mount $devpath $dir"
+    if ! qrun diag=quser mount $devpath $dir ; then
+        qReturnFail "Could not mount $devpath on $dir"
+        if test "$created_mountpt" = y ; then
+            qrun rm -df $dir
+        fi
+        return 1
+    fi
+    qbug "Mounted $devname on $dir"
+    return 0
+}
+
+
+##############################################################################
+# mbuDevMountAuto <devspec>  -- mount a partition in default place
+#               <devspec> is ala mbuDevFind match=unique
+#       Default place given by $mbuMountDir
+#       If successful, mount point is returned via qresult
+##############################################################################
+mbuDevMountAuto()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local devspec=${1:-} ; shift||true
+    if test -z "$devspec" ; then qReturnFail "arg 1" ; return 1 ; fi
+    if ! mbuDevFind match=unique "$devspec" ; then 
+        qReturnFail "could not find device based on: $devspec" ; return 1 ; fi
+    local devname ; qResult devname
+    local partname=${mbuDevP_partname[$devname]}
+    if test -z "$partname" ; then
+        qReturnFail "No partition name for $devname" ; return 1  
+    fi
+    local mountpt="$mbuMountDir/$partname"
+    # Note: it should certainly be okay to unmount the mountpoint if currently
+    # in use, as might happen following an aborted operation.
+    if ! mbuDevMount "$devname" "$mountpt" -unmount ; then
+        rm -df $mountpt || true # try to clean up
+        qReturnFail "could not mount partition $devspec on temp mount pt $mountpt"
+        return 1
+    fi
+    qReturnOk "$mountpt" ; return 0
+}
+
+
+##############################################################################
+# mbuDevBusyCheck [<devspec>]... -- fail if any device is mounted upon
+#               This includes disk devices with partitions mounted on.
+#       <devspec> is device spec ala mbuDevFind.
+#               Invalid <devspec> results in failure (from mbuDevFind).
+#
+#       TODO maybe: pass through an ignore option for mbuDevFind
+##############################################################################
+mbuDevBusyCheck()
+{
+    local fail=n
+    mbuDevRefreshMaybe
+    if ! mbuDevFind "$@" ; then qReturnFail; return 1 ; fi
+    local devnames; qResult devnames
+    local devname
+    for devname in $devnames ; do
+        qbug "Checking [$devname]"
+        local mountpt=${mbuDevP_mountpt[$devname]}
+        if test -n "$mountpt" ; then
+            qReturnFail "Device $devname BUSY: is mounted on $mountpt"; return 1
+        fi
+        # Check partitions as well
+        local childname;
+        for childname in ${mbuDevOrder[@]} ; do
+            local parentname=${mbuDevP_parentname[$childname]}
+            if test "$parentname" != "$devname" ; then continue ; fi  # not a child
+            local mountpt=${mbuDevP_mountpt[$childname]}
+            if test -n "$mountpt" ; then
+                qerror "Device $devname BUSY: partition $childname is mounted on $mountpt"
+                fail=y
+            fi
+        done
+    done
+    if test "$fail" = y ; then
+        qReturnFail; return 1
+    fi
+    qReturnOk ; return 0
+}
+
+##############################################################################
+# mbuSessionPartRecord -- global array variable, record of what we've done in this session
+#       Indexed per partition by partition name.
+#       This doesn't account for all partitions, only those the session deals with,
+#       typically those in the "from set" and the "out set".
+declare -A mbuSessionPartRecord
+# Values for mbuSessionPartRecord elements:
+# (empty)               -- partition not accounted for yet
+# MBUMarkDeselected     -- partition not selected
+# MBUMarkSourceSkipped  -- target whose source was skipped
+# MBUMarkSource         -- partition was a source of a sync or copy
+# MBUMarkSourceBoot     -- partition was a source, for bootability reasons
+# MBUMarkTarget         -- partition was a target of a sync or copy
+# MBUMarkNoSet          -- partition name not MBU compliant
+# MBUMarkOtherSet       -- partition not part of source or target set
+# MBUMarkSwap           -- source partition was for swap (no filesystem)
+# MBUMarkBadFs          -- source partition had unsupported file system
+# MBUMarkHadError       -- we had an error with this partition but continued
+##############################################################################
+# mbuSessionBootFix -- remember here if in session we fixed bootability
+mbuSessionBootFix=n           # yes if we fixed bootability
+##############################################################################
+# mbuSessionClean -- do this before starting a new session?
+#       Do NOT need to do this after a session, in general.
+##############################################################################
+mbuSessionClean()
+{
+    qEnter "$@"  # our standard way to begin a function
+    mbuSessionPartRecord=( )
+    mbuSessionBootFix=n
+}
+##############################################################################
+# mbuSessionPartMark <partition> <mark> -- mark that we've taken care of a partitiion
+#       Mark is one of mbuMark* , see above.
+#
+# NOTE: Failure should be unexpected; no need to check for it!
+#       Should there be a failure, program will abort (if set -e)
+##############################################################################
+mbuSessionPartMark()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local part="${1:-}" ; shift||true
+    if test -z "$part" ; then qReturnFail "missing arg1"; return 1; fi
+    local mark="${1:-}" ; shift||true
+    if test -z "$mark" ; then qReturnFail "missing arg2"; return 1; fi
+    mbuSessionPartRecord[$part]="$mark"
+    return 0
+}
+##############################################################################
+# mbuSessionPrint [<opt>]... <label> -- 
+#               print to stdout the list of what we've done in this session
+#       <label> is included at top and end of the outpt.
+#       <opt> is one of:
+#               prediction={y|n}  -- y to state status as a prediction
+#
+#       This is intended for the user to see.
+##############################################################################
+mbuSessionPrint()
+{
+    qEnter "$@"  # our standard way to begin a function
+    mbuDevRefreshMaybe
+    local prediction=n
+    while test $# -gt 0 ; do
+        local option="$1"
+        case "$option" in
+            prediction=y) shift; prediction=y ;;
+            prediction=n) shift; prediction=n ;;
+            *) break ;;
+        esac
+    done
+    local label="$*"
+    echo "$label =================================================="
+    local idev
+    for idev in ${!mbuDevOrder[@]} ; do
+        local devname=${mbuDevOrder[$idev]}
+        local partname=${mbuDevP_partname[$devname]:-}
+        # qbug "idev=$idev devname=$devname partname=$partname"
+        if test -z "$partname" ; then continue ; fi     # shouldnt happen
+        local status=${mbuSessionPartRecord[$partname]:-}       # empty if missing
+        local devtype=${mbuDevP_devtype[$devname]:-'ouch'}
+        local devtypemsg='xxxx'
+        if test "$devtype" = part ; then
+            devtypemsg=PART
+        elif test "$devtype" = disk ; then
+            devtypemsg=DISK
+        else
+            devtypemsg=MISC
+        fi
+        local msg
+        case "$status" in
+            MBUMarkSourceSkipped) msg="Skipped - source was skipped"
+                if test $prediction = y ; then msg="Skip - because source will be skipped" ; fi
+            ;;
+            MBUMarkSwap) msg="Skipped swap partition"
+                if test $prediction = y ; then msg="Skip swap partition" ; fi
+            ;;
+            MBUMarkBadFs) msg="Skipped - not a supported filesystem"
+                if test $prediction = y ; then msg="Skip - not a supported filesystem" ; fi
+            ;;
+            MBUMarkNoSet) msg="Skipped - partition name is not MBU compliant"
+                if test $prediction = y ; then msg="Skip - partition name is not MBU compliant" ; fi
+            ;;
+            MBUMarkSource) msg="SYNCED from this partition"
+                if test $prediction = y ; then msg="SYNC from this partition" ; fi
+            ;;
+            MBUMarkSourceBoot) msg="SYNCED from this partition, for bootability fix"
+                if test $prediction = y ; then msg="SYNC from this partition, for bootability fix" ; fi
+            ;;
+            MBUMarkTarget) msg="SYNCED to this partition"
+                if test $prediction = y ; then msg="SYNC to this partition" ; fi
+            ;;
+            MBUMarkHadError) msg="WARNING had issue"
+            ;;
+            MBUMarkDeselected)
+                msg="Skipped"
+                if test $prediction = y ; then msg="Skipping" ; fi
+            ;;
+            *) 
+                local devtype=${mbuDevP_devtype[$devname]:-}
+                if test "$devtype" = part ; then
+                    msg="Skipped (unaccounted for)"
+                    if test $prediction = y ; then msg="(Unaccounted for)" ; fi
+                elif test "$devtype" = disk ; then
+                    msg=''
+                else
+                    msg=''
+                fi
+            ;;
+        esac
+        local prettypart; printf -v prettypart '%-4s %-20s :' $devtypemsg $partname
+        echo "$prettypart $msg"
+    done
+    if test "$mbuSessionBootFix" = y ; then 
+        local prettypart; printf -v prettypart '%-25s :' "BOOTABILITY"
+        msg="FIXED"
+        if test $prediction = y ; then msg="FIX" ; fi
+        echo "$prettypart $msg"
+    else 
+        echo "Skipping BOOTABILITY FIX!"
+        echo "... WARNING without this, syncing root, efi or boot may make the backup disk unbootable!"
+    fi
+    echo "================================================== $label"
+    return 0
+}
+
+
+
+##############################################################################
+# mbuDateStampWrite <dir> <msg>
+#       Create date stamp file in specified directory containing optional msg
+#       <dir> is directory the date stamp is created below
+#       <msg> is what is written to the date stamp file
+# Does nothing if variable mbuDoDateStampWrite is not set to 'y'
+#
+# This is a potentially dangerous option with potentially limited benefit.
+# It would be mostly useful if you lost the active log files and were trying
+# to figure out which is the latest backup disk... you could look at date
+# stamp files on the backup disks and figure which is latest.
+##############################################################################
+mbuDateStampWrite()
+{
+    qEnter "$@"  # our standard way to begin a function
+    if test x"$mbuDoDateStampWrite" = "xy" ; then
+        local dir=${1:-} ; shift||true
+        if test ! -d $dir ; then
+            qReturnFail Not a directory: $dir
+            return 1
+        fi
+        local path=$dir/$mbuDateStampName
+        quser "(Re)writing date stamp file: $path"
+        if ! qrun echo $(date '+%F %T') "$*" >$path ; then
+            qReturnFail Failed to write date stamp file: $path
+            return 1
+        fi
+    else
+        qbug "doing nothing per mubDoDateStampWrite"
+    fi
+}
+
+
+
+##############################################################################
+# mbuFsUuidCopy <fromdev> <outdev> -- copy file system uuid between partitions
+#       <fromdev> and <outdev> are filepaths of device files for the partitions
+#       <outdev> must be unmounted
+#       Works ONLY for ext* family file systems!!!!!!!!!!!!!!!!
+##############################################################################
+mbuFsUuidCopy()
+{
+    qEnter "$@"  # our standard way to begin a function
+    if test x"$mbuDoFsUuidCopy" = "xy" ; then
+        local from="${1:-}" ; shift||true
+        if test ! -b "$from" ; then
+            qReturnFail "arg 1 is missing or not a block device file"
+            return 1
+        fi
+        local to="${1:-}" ; shift||true
+        if test ! -b "$to" ; then
+            qReturnFail "arg 2 is missing or not a block device file"
+                return 1 ; fi
+        if ! mbuDevProperty fsuuid $from ; then
+            qReturnFail "cannot find fsuuid for $from" ; return 1 ; fi
+        local uuid ; qResult uuid
+# The following unnecessary check succeds only for ext* uuids, not vfat...
+#        if test $(echo "$uuid" | wc -c) != 37 ; then
+#            qReturnFail "invalid fs uuid from $from -- GOT $uuid"
+#            return 1
+#        fi
+        qbug "FS UUID of $from is $uuid"
+        if ! mbuDevProperty fsuuid $to ; then
+            qReturnFail "cannot find fsuuid for $to" ; return 1 ; fi
+        local olduuid ; qResult olduuid
+        if test "x$olduuid" = "x$uuid" ; then
+            quser "GOOD, FS UUID of target $to is already $uuid"
+        else
+            quser "FS UUID of target $to is $olduuid instead of $uuid ... FIXING..."
+            qrun diag=quser e2fsck -y -f $to   # tune2fs mandates this
+            if qrun diag=quser tune2fs -U "$uuid" $to ; then
+                quser "SET FS UUID of target $to to $uuid OK"
+            else
+                qReturnFail ": FAILED to set UUID of target $to to $uuid"
+                return 1
+            fi
+        fi
+    else
+        qbug "doing nothing, per mbuDoFsUuidCopy"
+    fi
+}
+
+
+##############################################################################
+# mbuDirSync <fromdir> <todir> -- make the directory pointed by <todir>
+#               be the same content as that of <fromdir> 
+#               in optimized fashion (see rsync command)
+#     <fromdir> -- source directory 
+#     <todir> -- destination directory
+#     Both directories must exist or an error results.
+#     Refer to rsync documentation for a better understanding.
+# CAVEATS:
+#     rsync as used does NOT traverse file systems ... this is a feature!
+#               (it silently skips over subdirectories in a different f.s.)
+#     rsync fails (usually) if the source changes after being synced over
+#               ... this is a feature that ensures consistency!
+#               Generally, the user will have to restart under more
+#               quiescent conditions.
+#     For best results, <fromdir> and <todir> should both be the root directory
+#     of their respective (differen) filesystems... 
+#     they should certainly not be overlapping.
+##############################################################################
+mbuDirSync()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local from="${1:-}" ; shift||true
+    if test ! -d "$from" ; then
+        qReturnFail "arg 1: Not a directory: $from"
+        return 1
+    fi
+    local to="${1:-}" ; shift||true
+    if test ! -d "$to" ; then
+        qReturnFail "arg 2: Not a directory: $to"
+        return 1
+    fi
+    quser START Directory SYNC FROM $from TO $to
+    # rsync options
+    #  a = archive mode (always want this)
+    #  x = don't cross file system boundaries (always want this)
+    #  v = verbose (esp. prints names of all files changed)
+    #  q = quiet (useful?)
+    #  c = checksum -- compare checksums of every file instead of modtime/size
+    #  n = don't actually anything (dry run)
+    local verbose=''
+    if test "x$mbuDoRsyncVerbose" = xy ; then verbose='v' ; fi
+    local checksum=''
+    if test "x$mbuDoRsyncChecksum" = xy ; then checksum='c' ; fi
+    local dryrun=''
+    if test "x$mbuDoRsyncDryRun" = xy ; then dryrun='n' ; fi
+    if ! qrun diag=quser retries=$mbuRsyncRetries rsync -a${verbose}x${checksum}${dryrun} --delete $from/. $to/. 
+    then
+        qReturnFail FAILED: rsync $from $to
+        return 1
+    fi
+    # Just in case rsync somehow failed to sync the top level directory permissions
+    # ... the following is probably completely unnecessary.
+    if ! qrun diag=quser chmod --reference="$from/." "$to/." ; then
+        qReturnFail Failed to sync directory permissions from $from to $to
+        return 1
+    fi
+    quser DONE SYNCING FROM $from TO $to
+}
+
+
+##############################################################################
+# mbuDevFsck <devfilepath> -- file system check on given umounted disk/partition
+#       <devfilepath> -- device file path
+#       Error if the device is not a block device capable of holding 
+#       a file system.
+#
+#       This check is in theory optional, 
+#       but may prevent further corruption should any be detected.
+#
+#       This function only does the check for certain file system types,
+#       others are just ignored with no error.
+##############################################################################
+mbuDevFsck()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local dev=${1:-} ; shift||true
+    if test ! -b "$dev" ; then
+        qReturnFail Partition is invalid or not present: "$dev"
+        return 1
+    fi
+    if ! mbuDevProperty fstype devpath="$dev" ; then
+        qReturnFail "cannot find file system type for: $dev"
+        return 1
+    fi
+    local fstype ; qResult fstype
+    case "$fstype" in 
+        ext*) 
+            # NOTE fsck has no option to be non-interactive
+            # it invokes e2fsck if ext* filesystem, which by default is
+            # interactive and insists on it, ugh!
+            # running e2fsck -y gets around this problem, but of course only
+            # works with ext* file systems
+            quser "Checking $fstype file system on $dev"
+            if ! qrun diag=quser e2fsck -y $dev ; then
+                qReturnFail File System Check failed on : $dev
+                return 1
+            fi
+        ;;
+        *) quser "mbuDevFsck no filesytem check done on: $dev (type $fstype)"
+        ;;
+    esac
+    qbug "END Fsck of $dev"
+    qReturnOk  ;  return 0
+}
+
+
+##############################################################################
+# mbuMountedPartSync <fromdir> <outspec>
+#   Sync a (mounted) file system to an unmounted partition.
+#   (if target already mounted, it is unmounted if possible
+#   before remounting temporarily).
+#       <fromdir> must be a directory, for best results the root of a partition.
+#       <outspec> -- identifies target partition ala mbuDevFind match=unique.
+#           The target MUST be unmounted.
+# You must ensure that the partition has been
+# named (labelled) in the GPT disk formatting and that the name is unique!
+#
+# This will also create datestamp files in the source and destination directory
+# unless overridden by mbu variables... the presence and content of these files
+# provide aid for determing when a backup was last done.
+# It will also sync the file system uuid unless prevented by mbu variables.
+#
+# Uses a mount point directory automatically created.
+# In event of failure, this may remain mounted, and will automaticaly be
+# unmounted if you run this again (although it may fail again).
+# Manual umounting may be required.
+#
+# NOTE: this may fail if a file in the source changes, necessitating manual
+# retry! (although automatic retry usually fixes)
+#
+# TODO more control over when datestamping is done
+##############################################################################
+mbuMountedPartSync()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local fromdir="${1:-}" ; shift||true  # a filepath (of directory)
+    if ( test ! -d "$fromdir" ) then
+        qReturnFail Source is not a directory: "$fromdir"
+        return 1
+    fi
+    local outspec="${1:-}" ; shift||true
+    if ! mbuDevFind match=unique "$outspec" ; then
+        qReturnFail "bad target : $outspec" 
+        return 1
+    fi
+    local outdevname ; qResult outdevname
+    local outdevpath=${mbuDevs[$outdevname]}
+    local outpart=${mbuDevP_partname[$outdevname]}
+    if ! mbuDevProperty partname filepath="$fromdir" ; then
+        qReturnFail "cannot find partition for : $fromsdir"
+        return 1
+    fi
+    local frompart ; qResult frompart
+    quser "START Syncronizing FROM $fromdir TO $outdevpath ($outspec) "
+    # For safety, file system check the destination... 
+    # this also ensures it really is a filesystem
+    if ! mbuDevFsck $outdevpath ; then
+        qReturnFail File System Check failed on target: $outdevpth
+        return 1
+    fi
+    # Copy over the file system UUID ... makes booting easier
+    # The target must be unmounted if we actually need to make the change.
+    if test "$mbuDoFsUuidCopy" = y ; then
+       if ! mbuDevFind match=unique filepath=$fromdir ; then
+           qReturnFail "failed to find $fromdir" ; return 1
+       fi
+       local fromdevname ; qResult fromdevname
+       local fromdevpath=${mbuDevs[$fromdevname]}
+       if ! mbuFsUuidCopy $fromdevpath $outdevpath ; then
+           qReturnFail "failed to copy FS UUID from $fromdir to $outdevpath"
+           return 1
+       fi
+    fi
+    # Mount the file system so we can actually copy files in it etc.
+    if ! mbuDevMountAuto $outdevname ; then
+        return 1
+    fi
+    local todir ; qResult todir
+    # Write "start" date stamp files for post-mortem debugging of our backup process
+    # and recovery if our active log file is lost... will help us figure out the
+    # the latest backup disk.
+    # We put "started" messages in both source and target to begin with.
+    # If we die early, those messages will remain and we will know the status of
+    # the target is unclear (as is the status of the source I suppose :~)
+    # The rsync will then copy the source started message to the destination
+    # and the status of the target is still unclear.
+    # Only after successful rsync do we put "completed" messages in both places,
+    # which provide clarity.
+    #
+    # BUT Modifying the source or even the target can be undesireable in some situations!
+    # And $fromdir may just be a temporary mount point so putting that in the message
+    # may be less than useful.
+    if mountpoint -q "$fromdir" ; then    # avoid writing if mount failed or etc.
+        mbuDateStampWrite $fromdir "FS SYNC STARTED (SOURCE) FROM $fromdir ($frompart) to $outdevpath ($outspec)"
+    else
+        qerror "NOT a mountpoint? : $fromdir"
+    fi
+    if mountpoint -q "$todir" ; then    # avoid writing if mount failed or etc.
+        mbuDateStampWrite $todir "FS SYNC STARTED (DESTINATION) FROM $fromdir ($frompart) to $outdevpath ($outspec)"
+    else
+        qerror "NOT a mountpoint? : $todir"
+    fi
+    # Actually sync the files!
+    if ! mbuDirSync $fromdir $todir ; then
+        return 1
+    fi
+    # Write "completed" date stamp files for post-mortem debugging of our backup process
+    if mountpoint -q "$fromdir" ; then    # avoid writing if mount failed or etc.
+        mbuDateStampWrite $fromdir "FS SYNC COMPLETED (SOURCE) FROM $fromdir ($frompart) to $outdevpath ($outspec)"
+    else
+        qerror "NOT a mountpoint? : $fromdir"
+    fi
+    if mountpoint -q "$todir" ; then    # avoid writing if mount failed or etc.
+        mbuDateStampWrite $todir "FS SYNC COMPLETED (DESTINATION) FROM $fromdir ($frompart) to $outdevpath ($outspec)"
+    else
+        qerror "NOT a mountpoint? : $todir"
+    fi
+    # Clean up!
+    if ! mbuCleanMountPt $todir ; then
+        qReturnFail "failed to unmount $todir"
+        return 1
+    fi
+    mbuSessionPartMark "$frompart" MBUMarkSource
+    mbuSessionPartMark "$outpart" MBUMarkTarget
+    quser "DONE Syncronizing FROM $fromdir ($frompart) TO $todir ($outspec)"
+}
+
+##############################################################################
+# mbuPartSync <from-spec> <to-spec>
+#               Sync one partition to another.
+#       <fromspec> -- partition to copy from, ala mbuDevFind match=unique
+#       <outspec> -- partition to copy to, ala mbuDevFind match=unique.
+#
+#       The partitions will be automatically temporarily mounted as necessary.
+##############################################################################
+mbuPartSync()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local fromspec="${1:-}" ; shift||true
+    local outspec="${1:-}" ; shift||true
+    if test -z "fromspec" -o -z "outspec" ; then
+        qReturnFail "missing arg(s)" ; return 1
+    fi
+    if ! mbuDevFind match=unique "$fromspec" ; then
+        qReturnFail "cannot find device to copy from: $fromspec" ; return 1
+    fi
+    local fromdevname ; qResult fromdevname
+    local fromdevpath=${mbuDevs[$fromdevname]}
+    if ! mbuDevFind match=unique "$outspec" ; then
+        qReturnFail "cannot find device to copy to: $outspec" ; return 1
+    fi
+    local outdevname ; qResult outdevname
+    local outdevpath=${mbuDevs[$outdevname]}
+    local outpart=${mbuDevP_partname[$outdevname]}
+
+    # See if it's mounted by getting mount point (empty if not mounted)
+    local fromdir=${mbuDevP_mountpt[$fromdevname]}
+    if ! test -z "$fromdir" ; then
+        # Already mounted
+        quser "START Syncronizing FROM $fromdir TO partition ($outspec) on $outdevpath"
+        if ! mbuMountedPartSync "$fromdir" "$outspec" ; then
+            qReturnFail "failed to sync from $fromdir to partition ($outspec) on $outdevpath"
+            return 1
+        fi
+        quser "DONE Syncronizing from $fromdir to partition ($outspec) on $outdevpath"
+        quser "================================================================================"
+        quser "================================================================================"
+        quser "================================================================================"
+        return 0 
+    fi
+
+    # Here if source is not already mounted
+    qbug "step 2"
+    # For safety, file system check the source... 
+    # this also ensures it really is a filesystem
+    if ! mbuDevFsck $fromdevpath ; then
+        qReturnFail "File System Check failed on target: $fromdevpath"
+        return 1
+    fi
+    # Temporarily mount the source file system so we can actually copy files in it etc.
+    if ! mbuDevMountAuto $fromdevname ; then
+        return 1
+    fi
+    local fromdir ; qResult fromdir
+    quser "mbuPartSync START Syncronizing from ($fromspec) on $fromdevpath to ($outspec) on $outdevpath"
+    if ! mbuMountedPartSync "$fromdir" "$outspec" ; then
+        mbuCleanMountPt "$fromdir" || true   # try to clean up
+        qReturnFail "failed to sync from $fromdir to partition ($outspec)"
+        return 1
+    fi
+    # DONE in mbuMountedPartSync: mbuSessionPartMark "$outpart" MBUMarkTarget
+    quser "DONE Syncronizing FROM ($fromspec) ON $fromdevpath TO ($outspec) ON $outdevpath"
+    if mbuCleanMountPt "$fromdir" ; then
+        qReturnFail "failed to unmount $fromdir"
+        return 1
+    fi
+    return 0
+}
+
+
+##############################################################################
+# mbuPartTopSync <fromdev> <todev> -- Sync top level features of partition without
+#       actually syncing the files.
+#       <fromdev> and <todev> are as for mbuDevFind match=unique.
+#       Might be useful for e.g. /tmp ...
+#       you may wish to avoid syncing /tmp on the theory that it isn't
+#       needed in a backup set.
+##############################################################################
+mbuPartTopSync()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local fromspec="${1:-}" ; shift||true
+    if test -z "$fromspec" ; then
+        qReturnFail "missing 1st arg" ; return 1
+    fi
+    if ! mbuDevFind match=unique "$fromspec" ; then
+        qReturnFail ; return 1
+    fi
+    local fromdevname ; qResult fromdevname
+    local fromdevpath=${mbuDevs[$fromdevname]}
+    local outspec=${1:-} ; shift||true
+    if test -z "$outspec" ; then
+        qReturnFail "missing 2nd arg" ; return 1
+    fi
+    if ! mbuDevFind match=unique partname="$outspec" ; then
+        qReturnFail "cannot find partition $outspec" ; return 1
+    fi
+    local outdevname ; qResult outdevname
+    local outdevpath=${mbuDevs[$outdevname]}
+
+    if ! mbuFsUuidCopy $fromdevpath $outdevpath ; then
+        qReturnFail "cannot copy uuid from $fromdev to $outdev"
+        return 1
+    fi
+
+    if ! mbuDevMountAuto "$outdevname" ; then
+        qReturnFail "failed to temporarily mount $outdev " ; return 1
+    fi
+    local outdir ; qResult outdir
+
+    if ! mbuMountFriendly "$fromdevname" ; then 
+        qReturnFail "failed to temporarily mount $fromdev " ; return 1
+    fi
+    local fromdir ; qResult fromdir
+    if test -z "$fromdir" ; then
+        mbuCleanMountPt $outdir || true # clean up?
+        qReturnFail "failed to temporarily mount $fromdev " ; return 1
+    fi
+
+    # Change the permissions to agree. Note that $fromdir might be
+    #   a symlink, so use $fromdir/. to get the target directory.
+    if qrun diag=quser chmod --reference="$fromdir/." "$outdir" ; then
+        qReturnFail "failed to chmod $outdir" ; return 1
+    fi
+    if ! mbuCleanMountPt $fromdir ; then
+        mbuCleanMountPt $outdir || true # clean up?
+        qReturnFail "failed to unmount $fromdir"
+        return 1
+    fi
+    if ! mbuCleanMountPt $outdir ; then
+        qReturnFail "failed to unmount $outdir"
+        return 1
+    fi
+    quser "mbuTmpFix : synced top level properties of $fromdevname to $outdevname"
+    qReturnOk
+}
+
+
+##############################################################################
+# mbuChrootDevFix -- add device files to mounted target Linux root partition 
+#               to make suitable for chroot
+#
+#       Usage: mbuChrootDevFix <rootdirpath>
+#               <rootdirpath> -- path where target Linux root partition mounted
+#
+#       Assumption: cleanup will do a recursive umount
+#
+#   Status return only
+##############################################################################
+mbuChrootDevFix()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local rootdirpath=${1:-}; shift||true
+    if test -z "$rootdirpath" ; then
+        qReturnFail "missing target root directory path arg" ; return 1
+    fi
+    # List of psuedo file subdirectories to be mounted
+    local mountdirs="proc dev sys"
+    # Temporarily mount essential psudeo-files;
+    local mountdir
+    for mountdir in $mountdirs
+    do
+        if ! qrun diag=quser mount --rbind /$mountdir "$rootdirpath"/$mountdir 
+        then
+            qReturnFail "Failed temp mount of /$mountdir"
+            return 1
+        fi
+    done
+    # special fixup to prevent some Linux weirdness:
+    if ! qrun diag=quser mount --make-rslave "$rootdirpath"
+    then
+        qReturnFail "Failed --make-rslave of $rootdirpath"
+        return 1
+    fi
+    qReturnOk ; return 0
+}
+
+
+##############################################################################
+# mbuBootFix -- make copied disk bootable, fixing boot/root and ef partitions
+#       NOTE: This copies boot files from currently booted Linux!
+#
+#       Usage: mbuBootFix <option>...
+#       Options:
+#           outefipart=<name> -- full partion name of target EFI partition
+#               Required
+#           outrootpart=<name> -- full partition name of target linux root p.
+#               Required. Must be prepopulated!
+#           outbootpart=<name> -- full partition name of target linux boot p.
+#               Optional: Omit this or pass empty or as <outrootpart> 
+#               if no separate boot partition. Otherwise, must be pre-populated
+#           fromEfiDir=<path> -- full path of efi directory to copy from
+#               Optional: default is /boot/efi i.e. that of running system
+#           efipartuuid -- partition uuid to use for target EFI partition
+#               Optional: from the partition of $fromEfiDir (or from
+#               /boot/efi which is a mountpoint for active EFI partition).
+#
+# Status return only.
+#
+# Assumptions: 
+#       -- Disk is using pure GPT/UEFI scheme (not MBR/legacy)
+#       -- Computer must be UEFI capable (excludes very old computers)
+#       -- Thus, the EFI partition is present on the disk, 
+#                       (and should be named <partroot>-efi)
+#       -- The active EFI partition is mounted on /boot/efi
+#       -- Target root partition has ALREADY been synced from source
+#`              root partition!!!!
+#               (likewise target boot partition, if one is provided)
+#       -- Target /boot will be in the root partition, or optionally
+#               in a separate partition (which must be properly populated!)
+#               (warning: untested feature)
+#       -- We are to copy from active /boot/efi which must be mounted
+##############################################################################
+mbuBootFix()
+{
+    qEnter "$@"  # our standard way to begin a function
+    mbuDevRefreshMaybe
+
+    # NOTE that HACK we ASSUME the linux distribution arranges to have the 
+    # EFI partition mounted at (almost) all times on /boot/efi
+    local fromEfiDir="/boot/efi"  # where to copy EFI files from
+    local outefipart=''    # target EFI partition
+    # Note: target boot partition, if used, must be prepopulated
+    local outbootpart=''   # target boot partition (empty for none)
+    # Note: target root partition must be prepopulated
+    local outrootpart=''   # target root partition
+    # EFI Partition UUID (default same as copied from)
+    local efipartuuid=''
+
+    qOption 'fromEfiDir='"$fromEfiDir"',outefipart,outbootpart,outrootpart' "$@" 
+    shift $qresult
+    if ! test -z "$*" ; then 
+        qReturnFail "Bad arg at $@" ; return 1
+    fi
+
+    # EFI partition info
+    if test -z "$outefipart" ; then
+        qReturnFail "missing efi partition name arg" ; return 1
+    fi
+    if ! mbuDevFind match=unique partname="$outefipart" ; then
+        qReturnFail "bad efi partition $outefipart" ; return 1
+    fi
+    local outefidevname ; qResult outefidevname
+    local outefidevpath=${mbuDevs[$outefidevname]}
+
+    # Linux Root partition info
+    if test -z "$outrootpart" ; then
+        qReturnFail "missing root partition name arg" ; return 1
+    fi
+    if ! mbuDevFind match=unique partname="$outrootpart" ; then
+        qReturnFail "bad root partition $outrootpart" ; return 1
+    fi
+    local rootdevname ; qResult rootdevname
+    local rootdevpath=${mbuDevs[$rootdevname]}
+
+    # Linux boot partition info (if separate boot partition)
+    local outbootdevpath=''        # default, no separate boot partition
+    local outbootdevname=''
+    if test -z "$outbootpart" -o '(' "$outbootpart" = "$outrootpart" ')' ; then
+        # Use root partition boot subdirectory instead
+        outbootpart=''     # just in case
+    else
+        if ! mbuDevFind match=unique partname="$outbootpart" ; then
+            qReturnFail "bad boot partition $outbootpart" ; return 1
+        fi
+        qResult outbootdevname
+        outbootdevpath=${mbuDevs[$outbootdevname]}
+    fi
+
+    # Old EFI partition info
+    if test -z "$fromEfiDir" ; then
+        qReturnFail "missing fromEfiDir" ; return 1
+    fi
+    local fromefipart=''
+    if test -z "$efipartuuid" ; then
+        # Use UUID of source, if not otherwise specified.
+        #       This works only if source is actually a valid
+        #       EFI partition.
+        if ! mbuDevFind match=unique filepath=$fromEfiDir ; then
+            qReturnFail "can't find $fromEfiDir" ; return 1
+        fi
+        local fromEfiDevName ; qResult fromEfiDevName
+        fromefipart=${mbuDevP_partname[$fromEfiDevName]}
+        efipartuuid=${mbuDevP_fsuuid[$fromEfiDevName]}
+        efipartuuid=${efipartuuid//-/}       # mkfs.fat wants no hyphen
+        if test -z "$efipartuuid" ; then
+            qerror "mbuBootFix: empty fs label for $fromEfiDir" ; return 1
+        fi
+    fi
+    # (Re)create EFI partition contents from scratch, populate from active partitions
+    if test "$mbuDoEfiUuidCopy" = "y" ; then
+        quser "Recreating EFI partition $outefipart on $outefidevpath id $efipartuuid"
+        if ! qrun diag=quser mkfs.fat -F 32 -i $efipartuuid $outefidevpath
+        then
+            qReturnFail "failed to recreate EFI file system on $outefidevpath error $$"
+            return 1
+        fi
+    else
+        quser "Recreating EFI partition $outefipart on $outefidevpath"
+        if ! qrun diag=quser mkfs.fat -F 32 $outefidevpath
+        then
+            qReturnFail "failed to recreate EFI file system on $outefidevpath error $$"
+            return 1
+        fi
+    fi
+    quser "Copy files from $fromEfiDir to EFI partition $outefipart"
+    # Temporarily mount target root partition
+    if ! mbuDevMountAuto $rootdevname ; then
+        qReturnFail "failed to mount target root partition $rootdevpath" ; return 1
+    fi
+    local outrootdir ; qResult outrootdir
+    # Temporarily mount target boot partition if separate
+    local outbootdir="$outrootdir/boot" 
+    if ! test -z "$outbootdevpath" ; then
+        if ! mbuDevMount $outbootdevname "$outbootdir" ; then
+            mbuCleanMountPt "$outrootdir" || true   # try to clean up
+            qReturnFail "failed to mount target boot partition $outbootdevpath" 
+            return 1
+        fi
+    fi
+    # Temporarily mount target EFI partition below root/boot
+    local efidir="$outrootdir"/boot/efi
+    if ! mbuDevMount $outefidevname "$efidir" ; then
+        mbuCleanMountPt "$outrootdir" || true   # try to clean up
+        qReturnFail "failed to mount target EFI $outefidevname" 
+        return 1
+    fi
+    # Copy EFI files exactly as is
+    # None of this contains any knowledge of what disk they are stored on.
+    if ! qrun diag=quser cp -a $fromEfiDir/. $efidir/. ; then
+        mbuCleanMountPt "$outrootdir" || true   # try to clean up
+        qReturnFail "failed to copy files from $fromEfiDir to partition $outefipart" 
+        return 1
+    fi
+    # Create basic /dev files for use before /dev is mounted
+    # ... otherwise linux won't come up! (at least that used to be the case)
+    qrun diag=quser cp -a /dev/console $outrootdir/dev/.
+    qrun diag=quser cp -a /dev/null $outrootdir/dev/.
+    # ... there may be more device files in a typical unmounted /dev
+    # ... but the above are apparently? the essential ones
+    #
+    # NOTE that for a pure GPT/UEFI system, all boot files are within the
+    # EFI partition, which we have made a copy of.
+    # Outside of partitions on a disk is only the partition table info.
+    # So there is no need to use a tool like grub-install ... we are done!
+    #
+    # Clean up
+    if ! mbuCleanMountPt $outrootdir ; then 
+        qReturnFail "umount error $outrootdir" ; return 1
+    fi
+    if ! test -z "$fromefipart" ; then
+        mbuSessionPartMark "$fromefipart" MBUMarkSource
+    fi
+    mbuSessionPartMark "$outefipart" MBUMarkTarget
+    quser "Fixed BOOTABILITY OK"
+    quser "================================================================================"
+    quser "================================================================================"
+    quser "================================================================================"
+    qReturnOk ;  return 0
+}
+
+
+
+
+##############################################################################
+# mbuMountAll <partset> -- attempts to mount all partitions named
+#       with a partition name of the form <partset>-<partfnc>
+#       where <partfnc> is other arbitrary text.
+#       NOTE that this uses our data cache, which includes made-up
+#       partition names where conformat partition names are not available.
+#
+#       Mount points are in MBU "mount" directory, and can be cleaned
+#       up (unmounted) using mbuClean.
+#
+#       ASSUMES use of mount point directory $mbuMountDir
+#
+#       Refuses to mount previously mounted partions that were mounted on
+#       other mount points... this is for your safety!
+#
+#       Continues on after errors so at least some things may be mounted.
+#       Return status is nonzero if there were any errors.
+##############################################################################
+mbuMountAll()
+{
+    qEnter "$@"  # our standard way to begin a function
+    mbuDevRefreshMaybe
+    local didfail=n        # remmber if we had failures
+    local partset=${1:-} ; shift||true
+    if test -z "$partset" ; then
+        qReturnFail "missing partset argument" ; return 1
+    fi
+    local devname;
+    for devname in ${!mbuDevs[@]} ; do
+        mbuDevRefreshMaybe
+        local devpath=${mbuDevsToPath[$devname]}
+        local thispartset=${mbuDevP_partset[$devname]}
+        if ! test "$thispartset" = "$partset" ; then 
+            continue
+        fi
+        local partname=${mbuDevP_partname[$devname]}
+        qbug "Match: $partname"
+        local devpath=${mbuDevs[$devname]}
+        fstype=${mbuDevP_fstype[$devname]}
+        if mbuFileSystemTypeIsMountable "$fstype" ; then
+            true
+        else
+            quser "skipping $partname $devpath : unsupported file system type $fstype"
+            continue
+        fi
+        qbug "MOUNTING $partname $devpath fstype $fstype on temp directory ..."
+        if mbuDevMountAuto $devpath ; then
+            local mountpt ; qResult mountpt
+            quser "MOUNTED $partname $devpath fstype $fstype on $mountpt OK"
+        else
+            qerror "FAILED to mount $devpath on temp dir but continuing..."
+            didfail=y
+        fi
+    done
+    if test "$didfail" = y ; then
+        quser "Only SOME WERE MOUNTED in $mbuMountDir !"
+        qReturnFail "...  LOOK IN: $mbuMountDir"
+        return 1
+    fi
+    quser "mbuMountAll DONE $partset"
+    quser "...  LOOK IN: $mbuMountDir"
+    return 0
+}
+
+
+
+##############################################################################
+# mbuMountFriendly {<partname>|<devspec>} -- mount partition with matching name
+#               or given by <devspec> suitable for mbuDevFind match=unique.
+#               If already mounted, puts a symlink to existing mount point.
+#       <partname> matches names in the data cache, which can be phony
+#       <devspec> -- per mbuDevFind.
+#
+#       ASSUMES use of mount point directory $mbuMountDir
+#       Unmounts and remounts if we had mounted in our mount point directory.
+#       Creates symbolic links where a partition is externally mounted,
+#       which can be considered friendly.
+#       Does not get too upset about invalid partition names.
+#       Return value is 0 on success and for invalid partition names;
+#       non-zero on other errors.
+#       Returned result via qresult is the actual mount point
+#       (either the one that we create, or the external one),
+#       or empty if invalid partition name or error.
+##############################################################################
+mbuMountFriendly()
+{
+    qEnter "$@"  # our standard way to begin a function
+    mbuDevRefreshMaybe
+    local devspec="${1:-}" ; shift||true
+    if test -z "$devspec" ; then qerror "Missing arg" ; return 1; fi
+    # Is it a partition?
+    if ! mbuDevFind match=nonmultiple partname="$devspec" ; then
+        qReturnFail ; return 1        # shouldnt happen
+    fi
+    local devname ; qResult devname
+    if test -z "$devname" ; then
+        # not a partition name, perhaps a spec for mbuDevFind
+        if ! mbuDevFind match=nonmultiple "$devspec" ; then         
+            qReturnFail ; return 1 ;  # shouldnt happen
+        fi 
+        qResult devname
+    fi
+    if test -z "$devname" ; then
+        quser "SKIPPING unmatched $devspec" ; qReturnOk ; return 0
+    fi
+    local fstype=${mbuDevP_fstype[$devname]}
+    if test "$fstype" = swap ; then
+        quser "SKIPPING $fstype device: $devspec" ; qReturnOk ; return 0
+    fi
+    local partname=${mbuDevP_partname[$devname]}
+    mkdir -p $mbuMountDir       # make sure mount directory exists
+    local mountpt="$mbuMountDir/$partname"
+    # If we have already mounted it or linked it, we will remount it.
+    if test -e "$mountpt" || test -L "$mountpt" ; then
+        # pre-existing, in our control ... unmount so we can remount
+        if ! mbuCleanMountPt "$mountpt" ; then
+            qReturnFail FAILED to unmount/remove previous mounting in: $mountpt
+            return 1
+        fi
+    fi
+    # If already mounted elsewhere, we'll just put a symlink to it
+    if ! mbuDevProperty mountpt partname="$partname" ; then
+        qReturnFail UNEXPECTED FAILURE on $partname ; return 1
+    fi
+    local othermountpt ; qResult othermountpt
+    if ! test -z "$othermountpt" ; then
+        #couldbe# quser Partition $partname is mounted elsewhere: $othermountpt
+        quser CREATING a symbolic link $mountpt '->' $othermountpt
+        if ! ln -s -n $othermountpt $mountpt ; then
+            qReturnFail FAILED to create symlink at $mountpt
+            return 1
+        fi
+        return 0
+    fi
+    qbug MOUNTING $partname ...
+    if ! mbuDevMountAuto partname="$partname" ; then
+        qReturnFail FAILED to mount partition $partname 
+        return 1
+    fi
+    return 0
+}
+
+
+##############################################################################
+# mbuPartNameFind <partspec> -- find the partition name for a partition
+#       which is identifed in anyway acceptable to mbuDevFind match=unique.
+#
+#       Return value is partition name, returned vi qresult ...
+#       may be empty if no partition name has been set.
+#       Return status is 0 if a partition name was found (even if empty), 1 if not.
+#       Likely failures:
+#       -- partition does not exist as specified (e.g. not connected to computer)
+##############################################################################
+mbuPartNameFind()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local partspec="${1:-}" ; shift||true
+    if ! mbuDevProperty partname "$partspec"  ; then
+        qReturnFail "failed to find partition name for: $partspec"
+            return 1 ; fi
+    local result ; qResult result 
+    qReturnOk "$result" ; return 0
+}
+
+
+##############################################################################
+# mbuPartSetNameFind <devspec> -- guess the partition set name for a partition
+#       which is identifed in anyway acceptable to mbuDevFind match=unique.
+#       This works best if partitions are named following the MBU scheme,
+#       with all partitions named <setname>-<function>
+#       and with no punctuation or whitespace in the components.
+#       All we have to do is find the partition name,
+#       then strip off the hyphen and what follows
+#       In the case of non compliant / missing partition names, something is 
+#       made up that kind of works.
+#
+#       Return status is 1 (fail) if mbuDevFind fails, else 0 (success).
+#       Return value is partset, returned vis qresult (should be nonempty).
+#       Likely failures:
+#       -- partition does not exist as specified (e.g. not connected to computer)
+##############################################################################
+mbuPartSetNameFind()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local devspec="${1:-}" ; shift||true
+    if ! mbuDevFind match=unique "$devspec" ; then
+        qReturnFail "failed to find partition based on: $devspec"
+        return 1
+    fi
+    local devname ; qResult devname
+    if test -z "$devname" ; then
+        qReturnFail ; return 1          # shouldnt happen
+    fi
+    local partset=${mbuDevP_partset[$devname]}
+    qReturnOk "$partset"  ; return 0
+}
+
+
+##############################################################################
+# mbuPartFncNameFind <partspec> -- guess the partition function for a partition
+#       which is identifed in anyway acceptable to mbuDevFind match=unique.
+#       "Function" means the part of the partition mame following the
+#       set name and the hyphen, when using MBU conformant partition naming.
+#       It is called "function" because typically it will identify what the
+#       partition is being used for.
+#       This works great if partitions are named following the MBU scheme,
+#       with all partitions named <setname>-<function>
+#       and with no punctuation or whitespace in the components.
+#       All we have to do is find the partition name,
+#       then strip off the hyphen and what precedes
+#       In the case of non compliant / missing partition names, something is 
+#       made up that kind of works.
+#
+#       Return status is 1 (fail) if mbuDevFind match=unique fails, else 0 (success).
+#       Return value is partfnc, returned vi qresult (should be nonempty).
+#       Likely failures:
+#       -- partition does not exist as specified (e.g. not connected to computer)
+##############################################################################
+mbuPartFncNameFind()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local devspec="${1:-}" ; shift||true
+    if ! mbuDevFind match=unique "$devspec" ; then
+        qReturnFail "failed to find partition based on: $devspec"
+        return 1
+    fi
+    local devname ; qResult devname
+    local partfnc=${mbuDevP_partfnc[$devname]}
+    qReturnOk "$partfnc"  ; return 0
+}
+
+
+##############################################################################
+# mbuActiveSetNameFind -- guess the active partition set name
+#       The active partition set is the one being currently used for "/".
+#       NOTE: you can just use $mbuDevActiveSet instead, 
+#       forgoing error checking.
+#
+#       Return value is partset, returned vi qresult (non-empty string
+#       if successful).
+#       Return status is 0 if a set name was found, 1 if not.
+##############################################################################
+mbuActiveSetNameFind()
+{
+    qEnter "$@"  # our standard way to begin a function
+    mbuDevRefreshMaybe
+    local result="$mbuDevActiveSet"
+    if test -z "$result" ; then qReturnFail ; return 1 ; fi
+    qReturnOk "$result" ; return 0
+}
+
+
+##############################################################################
+# mbuBackupSetCheck [<opt>]... -- Backup set contains all required partitions?
+#       Partitions identified by function names in option fselection.
+#       Backup set identified by set name in option outset.
+#
+#       Return value is <outset> if checks ok, otherwise empty.
+#       Return status is 0 except in case of program error.
+#
+# Options:
+#       outset=<pset> -- the set we are checking
+#       fselection=[<fnc>...] -- which functions must be present
+##############################################################################
+mbuBackupSetCheck()
+{
+    qEnter "$@"  # our standard way to begin a function
+    # Options:
+    local outset=''
+    local fselection=''
+    qOption "outset,fselection," "$@" ; shift $qresult
+    if test $# -gt 0 ; then qReturnFail "Invalid arg at: $*" ; return 1; fi
+    if test -z "$outset" ; then qReturnFail "Missing set name at: $*"; return 1; fi
+    qSClean t=, v=fselection        # convert commas to spaces and clean
+
+    mbuDevRefreshMaybe
+    if test -z "${mbuDevSets[$outset]:-}" ; then
+        qReturnFail "Invalid partition set: $outset" ; return 1
+    fi
+    if test -z "$fselection" ; then qReturnOk "$outset" ; return 0 ; fi
+    local fnc
+    for fnc in $fselection ; do
+        local partname="$outset-$fnc"
+        local devpath
+        mbuDevFind match=multiple ignore=y partname="$partname" ; qResult devpath
+        if test -z "$devpath" ; then    # no partition by this hame
+            quser "Partition set $outset does not contain partition $outset-$fnc"
+            qReturnOk "" ; return 0       # soft fail
+        fi
+    done
+    qReturnOk "$outset" ; return 0
+}
+
+
+##############################################################################
+# mbuBackupSetNamesFind [<opt>]... -- find possible backup partition set(s)
+#       The set being copied from (option fromset, default active set)
+#       is excluded, as is any set which is missing any of the partition
+#       functions listed via the fselection option.
+#
+#       Returns nonzero status on extraordinary error 
+#       (e.g. can't find the active partition).
+#       If there are no matches, an empty result is returned.
+#       Return values via qresult.
+#
+#       Most likely reasons for not finding backup set(s):
+#       - Backup disk is not connected
+#       - Non-comformant partition naming
+#       - Not all required partition functions provided.
+#
+# Options:
+#       fromset=<setname>  -- set we are copying from (default active set)
+#       fselection=<fnc>[ <fnc>]...  -- partition fncs that must be present
+##############################################################################
+mbuBackupSetNamesFind()
+{
+    qEnter "$@"  # our standard way to begin a function
+    # Options:
+    local fromset=''              # spec for partition to base search on
+    local fselection=''         # partition fncs that must be present
+    qOption "fromset,fselection," "$@" ; shift $qresult
+    if test $# -gt 0 ; then qReturnFail "Invalid arg at: $*" ; return 1; fi
+
+    mbuDevRefreshMaybe
+    # Default, we are copying from the active set
+    if test -z "$fromset" ; then fromset="$mbuDevActiveSet" ; fi
+    # Look through all partition sets
+    local allsets="${!mbuDevSets[*]}"
+    qbug checking $allsets
+    local sets=""
+    local set
+    for set in $allsets ; do
+        if test "$set" = "$fromset" ; then
+            true        # skip set we are copying from
+        else
+            # include only if all fncs included
+            if ! mbuBackupSetCheck outset="$set" fselection="$fselection" ; then
+                qReturnFail "At: $*" ; return 1
+            fi
+            qResult set         # may be empty
+            sets="$sets $set"
+        fi
+    done
+    qSClean v=sets
+
+    case "$sets" in
+        '') qbug "No backup sets found"
+            qReturnOk ; return 0
+        ;;
+        *' '*) qbug "Multiple backup sets found: $sets"
+            qReturnOk "$sets" ; return 0
+        ;;
+        *) qbug "Single backup set found: $sets"
+            qReturnOk "$sets" ; return 0
+    esac
+}
+
+
+
+##############################################################################
+# mbuFncListGet <opt>... -- get list of partition name "functions" from set
+#   Options: 
+#       pset=<pset>    (default: active set, if any) (null value -> default)
+#           <pset> is a partition set name (part of partition name before hyphen)
+#           The "function" is the part of the partition name after the hyphen.
+#           Return result in qresult.
+#       bootfix={y}n}  -- y to add (to front of list) psuedo fnc named "-bootfix"
+#               that indicates fixing bootability...
+#               kind of a partition in that it involves the boot sectors of
+#               the disk, although it also involves root, efi and boot partitions.
+#   Returns nonzero on various errors, including no partitions found.
+#   Return value is list of fncs, which will not be empty.
+##############################################################################
+mbuFncListGet() 
+{
+    qEnter "$@"  # our standard way to begin a function
+    mbuDevRefreshMaybe
+    local pset=''       # input
+    local bootfix=n      # input
+    qOption "pset,bootfix," "$@" ; shift $qresult
+    if test $# -gt 0 ; then qReturnFail "At: $*" ; return 1 ; fi
+    # Default to active partition set
+    if test -z "$pset" ; then pset="$mbuDevActiveSet" ; fi
+    if test -z "$pset" ; then qReturnFail ; return 1; fi
+    local flist=''      # output
+    if ! mbuDevProperty match=multiple partfnc partset="$pset" ; then
+        qReturnFail ; return 1; fi
+    qResult flist
+    if test -z "$flist" ; then 
+        qReturnFail "No partitions found for set: $pset" ; return 1 
+    fi
+    if test "$bootfix" = y ; then
+        # Only supported for active set
+        if test "$pset" = "$mbuDevActiveSet" ; then
+            flist="-bootfix $flist"
+        fi
+    fi
+    qReturnOk "$flist"  ; return 0
+}
+##############################################################################
+# mbuFncSelectionWrite <selection> -- write partition function selection to a file
+#       Since this is not mission critical, no errors generated.
+##############################################################################
+mbuFncSelectionWrite()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local filepath="$mbuOutDir/mbu-fnc-selection"
+    local selection=${1:-''}
+    # Replace spaces with commas so it reads nicely as one word
+    selection=${selection//+([ ,])/,}
+    mkdir -p $(dirname $filepath) # create directory for it to live in as needed
+    echo "$selection" >"$filepath"
+    qReturnOk ; return 0
+}
+##############################################################################
+# mbuFncSelectionRead -- read partition function selection from a file
+#       Since this is not mission critical, no errors generated, and
+#       at worst you get an empty result.
+##############################################################################
+mbuFncSelectionRead()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local selection=''  # the result
+    local filepath="$mbuOutDir/mbu-fnc-selection"
+    if test -f "$filepath" ; then
+        # File format: one line, containing the fnc names sep. by spaces
+        <"$filepath" read selection
+    fi
+    # Convert to spaces instead of commas
+    qSClean v=selection t=,
+    # TODO %%% weed out invalid words
+    qReturnOk "$selection" ; return 0
+}
+##############################################################################
+# mbuFncSelectionShow <opt>..   -- show user what is selected
+#   Options:
+#       pset=<pset>   -- which partition set (default active)
+#       fselection=[<fnc>...] -- which functions are selected
+#       flist=[<fnc>...] -- which functions are allowed (default per pset)
+# Does not fail. No return result
+##############################################################################
+mbuFncSelectionShow()
+{
+    qEnter "$@"  # our standard way to begin a function
+    mbuDevRefreshMaybe
+    local flist=''      # input, full list of legal fncs
+    local pset=''       # input
+    local fselection=''  # input
+    qOption "pset,fselection,flist," "$@" ; shift $qresult
+    if test $# -gt 0 ; then qReturnFail "At: $*" ; return 1 ; fi
+    if test -z "$flist" ; then
+        if ! mbuFncListGet pset="$pset" ; then qReturnFail ; return 1; fi
+        qResult flist
+    fi
+    local fnc   # a partition function
+
+    qprint
+    qprint "    Note: Bootability fix available only from active set and"
+    qprint "    implies backup of active root, boot and efi partitions."
+    qprint "    Without boot fix, target disk might not be bootable."
+    qprint
+    qprint "Selection of Partitions in set $pset :"
+    for fnc in $flist ; do
+        local partname="$pset-$fnc"
+        local mountpt=''
+        local devpath=''
+        local selshow=' '$qPretty_underline'No'$qPretty_off
+        if test "$fnc" = -bootfix ; then
+            partname="$fnc"
+            mountpt="(fix bootability)"
+            devpath=${mbuDevP_devpath["$mbuDevRootDiskDev"]}
+            # special psuedo fnc
+        else
+            mbuDevProperty mountpt partname="$partname" ; qResult mountpt
+            if test -z "$mountpt" ; then mountpt="(unmounted)" ; fi
+            mbuDevProperty devpath partname="$partname" ; qResult devpath
+        fi
+        local selected
+        for selected in $fselection ; do
+            if test "$fnc" == "$selected" ; then selshow=$qPretty_green'Yes'$qPretty_off; fi
+        done
+        qprintf "%s %20s %-20s %s\n" "$selshow" "$partname" "$mountpt" "$devpath"
+    done
+    # Make a list with spaces to match flist
+    local showselect=''
+    for fnc in $flist ; do
+        local selected
+        for selected in $fselection ; do
+            if test "$fnc" == "$selected" ; then
+                showselect+="$qPretty_green$selected$qPretty_off "
+                continue 2
+            fi
+        done
+        # format spaces of the right length
+        local len=${#fnc} ; local format="%$len""s"
+        local temp; printf -v temp "$format" ''
+        showselect+="$temp "
+    done
+    # Do not trim
+
+    qprint
+    qprint "Summary of partition functions:"
+    qprint "All     : $flist"
+    qprint "Selected: $showselect"
+    qReturnOk ; return 0
+}
+##############################################################################
+# mbuFncSelectionI [<opt>...]  -- interactive get function selection
+#   Options:
+#       pset=<pset> -- set partition set to use.
+#               The special value of "active" selects the active set.
+#       fselection=<flist>
+#           Set starting list of partition functions, which user can override.
+#           The list may be separated with commas or spaces or both
+##############################################################################
+mbuFncSelectionI()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local psetspec=''   # partition set to use, or "active" for active set.
+    local fselection=''  # list of fncs
+
+    # Get reading disk info out of the way first...
+    # keeps the diagnostics cleaner looking.
+    if ! mbuDevRefreshMaybe ; then
+        qReturnFail ; return 1 ; fi   # shouldnt happen
+
+    # Parse options
+    qOption "pset:psetspec,fselection," "$@" ; shift $qresult
+    if test $# -gt 0 ; then qerror "$@" ; fi
+    qSClean v=fselection t=,
+    if test -z "$psetspec" ; then psetspec=active ; fi
+
+    qprint      # space for readability
+    if test -n "$fselection" ; then
+        qprint "Starting partition function selection:"
+        qprint "    $qPretty_green$fselection$qPretty_off"
+    else
+        # Read previous list from file where it may have been saved
+        mbuFncSelectionRead
+        qResult fselection
+        if test -n "$fselection" ; then
+            qprint "Found previous partition function selection:"
+            qprint "    $qPretty_green$fselection$qPretty_off"
+        fi
+    fi
+
+    # Harass the user until they get the fnc list right
+    while true ; do
+        # Re-read system partition information each time
+        # since there could be substantial time waiting for user
+        # to respond.
+        if ! mbuDevRefreshMaybe ; then
+            qReturnFail ; return 1 ; fi   # shouldnt happen
+    
+        local pset="$psetspec"   # which partition set to base on
+        if test "$psetspec" = active ; then   # special value
+            # Determine our active set based on where / is mounted
+            if ! mbuActiveSetNameFind ; then
+                qReturnFail "cannot determine active partition set name"
+                return 1
+            fi
+            qResult pset
+        fi
+    
+        # Get list of the last part of partition names (aka the "function"
+        # part of partition naame), for all partitions in current set
+        # (sharing same first part of partition name).
+        if ! mbuFncListGet bootfix=y pset="$pset" ; then  # (shouldn't happen) 
+            qReturnFail "err 1" ; return 1
+        fi
+        local flist ; qResult flist
+    
+        # If no selection, select all
+        if test -z "$fselection" ; then
+            fselection="$flist"
+            quser "Selecting all partition functions: $flist"
+        fi
+    
+        # Allow only valid input words, and force order of flist
+        qSListAnd "$flist" "$fselection" ; qResult fselection
+        if test -z "$fselection" ; then
+            qprint "No (valid) previous selections found."
+            qprint "Selecting all partition functions: $flist"
+            fselection="$flist"
+        fi
+    
+        # Show user
+        mbuFncSelectionShow pset="$pset" fselection="$fselection" flist="$flist"
+
+        # Perhaps get a new list
+        local oldselection="$fselection"
+        # TODO %%% Display -all option without being distracting
+        qUserRead promptbase='Enter selection' defaultvalue="$fselection"
+        qResult fselection
+        qSClean v=fselection
+        case "$fselection" in 
+            -all)
+                fselection="$flist"
+            ;;
+        esac
+        qprint
+
+        # Keep asking so long as user keeps making changes
+        #       otherwise we are done.
+        if test "$fselection" = "$oldselection" ; then
+            break
+        fi
+        # Try again...
+        mbuDevRefreshNeed               # Time has passed...
+    done
+
+    # Here we are satisfied with the selection; 
+    # Save it for next time!
+    qprint "Saving selection for next time."
+    mbuFncSelectionWrite "$fselection"
+    qprint
+    # And return it
+    qReturnOk "$fselection"  ; return 0
+}
+
+
+##############################################################################
+# mbuBackupScriptWrite [<option>...] -- 
+#       Write a bash script to backup the active file systems to other partition set
+#               and makes the target bootable.
+#       See mbuBackupScript_Help below for options.
+#
+#       This identifies the active partition set by looking at the partition
+#       that the unix root directory "/" is on.
+#       It then looks for another partition set by looking for a matching
+#       partition name with a different set name at the beginning.
+#       If there are multiple, it fails.
+#       [It would be possible to rewrite this to allow copying any set to another
+#       set, but this would be a big change.]
+#
+#       On success status, qresult contains one of the following depending
+#       on options:
+#               The filepath of the (executable) putput script file
+#               A message beginning with the word "echo"
+#               Empty (e.g. if help was printed)
+#       The output returned via qresult can always be appropriately 
+#       executed as a shell command.
+#
+# NOTE NOTE NOTE this handles all options of the "mbup" program
+#       and as such the help message below assumes you are running mbup.
+##############################################################################
+mbuBackupScript_Help='
+This is part of the MBU backup system and will work only if your disk
+partitions have been labelled in a conformant way... read the docs.
+Basically, all partitions should be labelled:
+        set-function
+where "set" is a name shared only by all partitions on the same disk
+(or set of disks), and function indicates your use of the partition.
+Backup disks should have corresponding partitions, with the same
+functions for partitions but a different set name.
+
+Be sure to connect the backup disk first, and be sure to
+DISCONNECT the backup disk when done!
+
+By default, a backup script is created (overwriting any previous one)
+and then executed.  
+You can manually make a copy, modify it as desired, and execute script later.
+Or more likely, you can just run ./mbup all the way to completion,
+which generates a new backup script each time.
+
+The backup script is based upon the partition set currently in use
+when the script is actually run,
+as determined by where the linux root filesystem (/) is mounted.
+If you want to backup from a different partition set, you will need to
+make a copy of the output script and then modify it.
+However, note that bootability fixes only work when backing up from
+the active partition set.
+
+Having a backup disk attached is not required to generate the script.
+The backup disk will be detected by the script when it runs.
+If it is not auto-detected, then it will prompt you (but see ask option).
+This allows re-using the same script for multiple backup disks,
+although you can of course have it recreated each time.
+
+The backup script (when executed) causes active disk partitions to be synced
+over to matching backup disk partitions, including file system UUIDs,
+and changes are made to the backup disk to ensure bootability.
+Date stamp files are placed in both source and target partitions to help
+in determining which backup is most up to date, although it will be easier
+to look in the generated log files (if using mbup) if available.
+
+To actually write to the backup disks requires root permission.
+E.g.:   sudo bash
+While I have tried to make it as safe is possible, there is inherent risk!
+
+GENERAL OPTIONS are:
+help | -help | --help -- print help for this message (only).
+fselection=<fnc>[,<fnc>]...  -- list of partitions (by function part of name)
+    The functions <fnc> are separated by commas (spaces work if quoted).
+ask={y|n|m} -- ask questions before continuing?
+    With ask=y, will always ask
+    With ask=n, will never ask
+    With ask=m, (maybe) will not ask if there is a clear single choice
+bootfix={y|n} -- y to enable fixing bootability if possible (the default)
+        Implies syncing / and /boot , 
+        rewriting efi partition and fixing boot sectors
+    WARNING syncing the / and /boot without fixing bootability
+    afterwards may cause the backup disk to be unbootable!
+o=<outfile>  -- specify filepath of created backup script 
+                        (default $mbuDir/log/mbubackup.custom).
+'  # END mbuBackupScript_Help ... beware of quote marks!
+# TODO maybe: supplement or replace some options with new filtering using mlu
+mbuBackupScriptWrite()
+{
+    qEnter "$@"  # our standard way to begin a function
+
+    # Options:
+    local dohelp=n
+    local helpoptspec='help:dohelp=y,-help:dohelp=y,--help:dohelp=y,'
+    local ask=${mbuask:-y}      # should script ask?
+    local bootfix=y             # do we fix bootability?
+    local outfile=''            # see default below
+    local fselection=''      # List of partition functions
+    qOption "ask,bootfix,o:outfile,fselection,$helpoptspec" "$@"
+    shift $qresult
+
+    # Get help out of the way
+    if test "$dohelp" = y ; then
+        qprint "$mbuBackupScript_Help" ; qReturnOk ; return 0
+    fi
+
+    # Clean up options
+    if test $# -gt 0 ; then qReturnFail "At: $*" ; return 1 ; fi
+    if test -z "$outfile" ; then 
+        outfile="$mbuOutDir"/mbubackup.custom
+    fi
+
+    qSClean t=, v=fselection        # convert commas to spaces and clean
+    # TODO add sanity check on words %%%%%%%%%
+    if test -z "$fselection" ; then
+        qReturnFail "Need a non-empty list of partition functions"; return 1
+    fi
+
+    # Some local variables
+    local datestamp=$(date +%Y/%m/%d-%H:%M:%S)     # for diagnostics
+
+    # Clear our memory of what we've done...
+    if ! mbuSessionClean ; then 
+        qReturnFail ; return 1 ; fi
+
+    # Re-read system partition information
+    if ! mbuDevRefreshMaybe ; then
+        qReturnFail ; return 1 ; fi   # shouldnt happen
+
+    # Determine our active set based on where / is mounted
+    # we have to do this before looking at options or else greatly 
+    # restructure the code.
+    local fromset="$mbuDevActiveSet"
+    if test -z "$fromset" ; then
+        qReturnFail "Cannot determine active partition set name"
+        return 1
+    fi
+
+    # Get the full list of fncs for this partition set
+    local flist=''
+    if ! mbuFncListGet bootfix="$bootfix" pset="$fromset" ; then
+        qReturnFail ; return 1 ; fi
+    qResult flist
+    qSListAnd "$flist" "$fselection" ; qResult fselection
+    if test -z "$fselection" ; then
+        qReturnFail "No valid partition fncs" ; return 1
+    fi
+    fselection_full="$fselection"   # for logging
+
+    # Here we remove the psuedo-fnc "-bootfix" which will be at the front
+    case "$fselection" in
+        -bootfix*) 
+            fselection=${fselection#-bootfix}  # remove -bootfix
+            qSTrim v=fselection
+            # leave bootfix flag as is
+        ;;
+        *) bootfix=n    # turn off bootfix
+        ;;
+    esac
+    case "$flist" in
+        -bootfix*) 
+            flist=${flist#-bootfix}  # remove -bootfix
+            qSTrim v=flist
+        ;;
+    esac
+    # flist and fselection are now only real partition functions
+
+    # Set up a list of permissions fchoice[] per partition in our list
+    # (identified by function fnc).
+    # Values include:
+    #   n -- omit partition
+    #   y -- include partition
+    local -A fchoice=( )  # per partition function status
+    for fnc in $flist ; do fchoice[$fnc]=n ; done       # default, omit
+    for fnc in $fselection ; do fchoice[$fnc]=y ; done  # unless selected
+
+    # Now to get serious!
+    local outefipart=''         # set only if we do them
+    local outrootpart=''
+    local outbootpart=''
+    local outset=''        # note, we can generate script without it
+    # Find a backup set, just to give better diagnostics
+    qbug "Looking for possible OPTIONAL backup partition set, for better diagnostics..."
+    if ! mbuBackupSetNamesFind fselection="$fselection" ; then
+        quser "IGNORING: did not find a backup partition; diagnostics will suffer"
+    else
+        local outsets
+        qResult outsets
+        # Arbitrarily use first one
+        shopt -s extglob     # Turn on extended features - should always be on!
+        outset="${outsets%%+([[:blank:]])+([^[:blank:]])}"
+    fi
+    # In case of no backup sets, use the word MISSING (ugh... ugly)
+    if test -z "$outset" ; then outset="MISSING" ; fi
+    qbug "GUESSED possible backup partition set: $outset"
+
+    quser "Writing file script: $outfile"
+    quser "Writing script based on active source partition set : $fromset"
+    quser "Diagnostics also consider possible output partition set : $outset"
+    rm -f $outfile      # remove old one so permissions are appropriate (not +x until ready)
+    mkdir -p $(dirname $outfile) # create directory for it to live in as needed
+    >$outfile echo '#!/bin/bash'
+    >>$outfile echo '#   Using custom MBU backup script generated at' $datestamp
+    >>$outfile echo '#   Created from directory '$mbuDir' as: ' $outfile
+    >>$outfile echo '#   CAUTION: This script generated automatically and may be out of date!'
+    >>$outfile echo 'set -e  # abort on errors'
+    >>$outfile echo '#   Here are the values of some important mbu variables'
+    >>$outfile echo '#   at the time we produced the custom script (refer to mbulib for docs):'
+    >>$outfile echo "cd $mbuDir"
+    >>$outfile echo 'qDiagnosticPrefix=MBUSCRIPT'
+    >>$outfile echo "mbuDir=$mbuDir"
+    >>$outfile echo "mbuMountDir=$mbuMountDir"
+    >>$outfile echo "mbuLogDir=$mbuLogDir"
+    >>$outfile echo "mbuOutDir=$mbuOutDir"
+    >>$outfile echo "qerror=$qerror"
+    >>$outfile echo "quser=$quser"
+    >>$outfile echo "qbug=$qbug"
+    >>$outfile echo "#maybe, but already baked in:# mbuask=$mbuask"
+    >>$outfile echo "mbuDoDateStampWrite=$mbuDoDateStampWrite"
+    >>$outfile echo "mbuRsyncRetries=$mbuRsyncRetries"
+    >>$outfile echo "mbuDoRsyncChecksum=$mbuDoRsyncChecksum"
+    >>$outfile echo "mbuDoFsUuidCopy=$mbuDoFsUuidCopy"
+    >>$outfile echo "mbuDoEfiUuidCopy=$mbuDoEfiUuidCopy"
+    >>$outfile echo 'source ./mbulib || echo Perhaps your current directory should be '$mbuDir
+    >>$outfile echo 'customscript()  {   # BEGIN CUSTOM BASH FUNCTION'
+    >>$outfile echo 'set -eu  # abort on errors'
+    >>$outfile echo 'local datestamp=$(date +%Y/%m/%d-%H:%M:%S)'
+    >>$outfile echo 'quser $datestamp BEGIN Custom backup script generated at' $datestamp
+    >>$outfile echo 'mbuClean quiet=y   # begin with a clean slate!'
+    >>$outfile echo 'mbuSessionClean    # begin with a clean slate!'
+    >>$outfile echo "#couldbe: local fromset=$fromset  # the partition set we copy from"
+#    >>$outfile echo 'local ask=${mbuask:-'$ask'}'
+    >>$outfile echo 'mbuActiveSetNameFind; local fromset ;qResult fromset  # the partition set we copy from'
+    >>$outfile echo "#couldbe: local outset=$outset   # the partition set we copy to"
+    >>$outfile echo "local outset=''   # the partition set we copy to"
+    >>$outfile echo 'mbuBackupSetNamesFind fselection="'$fselection'" || true # if it failed, result will be empty'
+    >>$outfile echo 'local outsets ; qResult outsets ; local nsets=$(qArgCount $outsets)  # the partition set(s) we can copy to'
+    # Possibly interactive sanity checking (when running script) follows:
+    >>$outfile echo 'if test "$nsets" -gt 1 ; then'
+    if test "$ask" = n ; then
+        >>$outfile echo 'qerror Too many backup choices! Goodbye!; return 1  '
+    else
+        >>$outfile echo 'echo; echo; qrun r=outset qUserRead promptbase="ENTER partition set to backup to, one of [$outsets]:"  '
+    fi
+    >>$outfile echo 'elif test "$nsets" = 0 ; then'
+    if test "$ask" = n ; then
+        >>$outfile echo 'qerror No backup partitions detected! Goodbye!; return 1 '
+    else
+        >>$outfile echo 'echo; echo; qrun r=outset qUserRead promptbase="ENTER partition set name to backup to (none found):" '
+    fi
+    >>$outfile echo 'else outset=$outsets '
+    if ! test "$ask" = y ; then
+        >>$outfile echo 'echo Auto-detected backup partition set: $outset '
+    else
+        >>$outfile echo 'echo; echo; local prompt="ENTER partition set to backup to: " '
+        >>$outfile echo 'local input; qrun r=outset qUserRead promptbase="$prompt" defaultvalue="$outset"  '
+    fi
+    >>$outfile echo 'fi ; if test -z "$outset" ; then echo; echo; qerror Cannot continue without knowing backup set. Goodbye! ; return 1; fi'
+    >>$outfile echo '>>$mbuMasterLogFile echo $(date +%Y/%m/%d-%H:%M:%S) START BACKUP FROM $fromset TO $outset'
+    >>$outfile echo 'echo; echo; echo "BACKING UP PARTITION SET $fromset TO $outset" '
+    qbug "Sync/Copy basic partitions from $fromset to $outset and maybe fix bootability..."
+    local partsdone=''          # for diagnostic message only!
+    >>$outfile echo 'local fncsdone=""'
+    # BOOTABILITY FIXES (syncs root and boot also)
+    if test "$bootfix" = y ; then
+        # Find partitions for root, efi, and possibly boot
+        # For the root partition this will be part of $fromset, but perhaps not for
+        # boot and efi? should we worry about that? I'll not worry for now...
+        if ! mbuPartFncNameFind / ; then qReturnFail "err 1" ; return 1 ; fi
+        local rootfnc ; qResult rootfnc
+        quser "Bootability fix: root FROM $fromset-$rootfnc"
+        if ! mbuPartFncNameFind /boot ; then qReturnFail "err 2" ; return 1 ; fi
+        local bootfnc ; qResult bootfnc
+        if test "$bootfnc" = "$rootfnc" ; then
+            bootfnc=''      # mark as not separate
+            quser "Bootability fix: /boot is in root partition"
+        else
+            quser "Bootability fix: /boot FROM $fromset-$bootfnc"
+        fi
+        if ! mbuPartFncNameFind /boot/efi ; then qReturnFail "err 3" ; return 1 ; fi
+        local efifnc ; qResult efifnc
+        quser "Bootability fix: efi FROM $fromset-$efifnc"
+        # Basic backup requuires root and efi partitions, plus boot partition if used.
+        # These are all need to make the system bootable.
+        outrootpart="$outset-$rootfnc"
+        outbootpart=''
+        if ! test -z "$bootfnc" ; then outbootpart="$outset-$bootfnc" ; fi
+        outefipart="$outset-$efifnc"
+        # Backup regular files for root and possibly boot partition
+        >>$outfile echo 'mbuPartSync filepath=/ partname=$outset-'"$rootfnc"
+        partsdone="$partsdone $outrootpart"
+        >>$outfile echo 'fncsdone+=" '"$rootfnc"'"'
+        mbuSessionPartMark "$fromset-$rootfnc" MBUMarkSourceBoot
+        mbuSessionPartMark "$outrootpart" MBUMarkTarget
+        if ! test -z "$bootfnc" ; then
+            >>$outfile echo 'mbuPartSync filepath=/boot partname=$outset-'"$bootfnc"
+            partsdone="$partsdone $outbootpart"
+            >>$outfile echo 'fncsdone+=" '"$bootfnc"'"'
+            mbuSessionPartMark "$fromset-$bootfnc" MBUMarkSourceBoot
+            mbuSessionPartMark "$outbootpart" MBUMarkTarget
+        fi
+        # Now fix bootability issues. This does a lot of things including
+        #   rewriting the efi partition, writing disk boot blocks,
+        #   modifying both the output partitions and some changes to the
+        #   active /boot directory.
+        if test "$bootfix" = y ; then
+            local outbootpart=''
+            if ! test -z "$bootfnc" ; then
+                outbootpart='$outset'-"$bootfnc"
+            fi
+            >>$outfile echo 'mbuBootFix outefipart=$outset-'$efifnc' outbootpart='$outbootpart' outrootpart=$outset-'$rootfnc "$@" 
+            mbuSessionPartMark "$fromset-$efifnc" MBUMarkSourceBoot
+            mbuSessionPartMark "$outefipart" MBUMarkTarget
+            >>$outfile echo 'fncsdone+=" '"$efifnc"'"'
+            mbuSessionBootFix=y
+            >>$outfile echo 'mbuSessionBootFix=y'
+            partsdone="$partsdone (fixed bootability)"
+            >>$outfile echo 'fncsdone+=" -bootfix"'
+        else
+            >>$outfile echo 'echo WARNING: boot fix deselected.'
+            >>$outfile echo 'echo WARNING: syncing root or boot partitions may cause backup disk to be UNBOOTABLE'
+        fi
+    fi
+
+    # Now backup other partitions in the source set
+    qbug "Sync other partitions from $fromset to $outset"
+    local idev
+    for idev in ${!mbuDevOrder[@]} ; do         # In canonical order
+        local thisdevname=${mbuDevOrder[$idev]}
+        local thisset=${mbuDevP_partset[$thisdevname]}
+        local thisfnc=${mbuDevP_partfnc[$thisdevname]}
+        local thispart=${mbuDevP_partname[$thisdevname]}
+        local frompart="$fromset"-"$thisfnc"
+        local outpart="$outset"-"$thisfnc"
+
+        # Skip anything we did above for bootability
+        if test -n "${mbuSessionPartRecord[$thispart]:-}" ; then
+            qbug "Already did $thispart : ${mbuSessionPartRecord[$thispart]:-}"
+            continue
+        fi
+
+        if test "$thisset" = "$fromset" ; then
+            true        # a potential source
+        else
+            if test "$thisset" = "$outset" ; then
+                if test -z "${mbuSessionPartRecord[$thispart]:-}" ; then
+                    qbug "possible output partition we hope to match later : $thispart"
+                else
+                    qbug "partition looked at already: $thispart"
+                fi
+            else
+                # If not part of from or out sets, mark it as skipped
+                qbug "skipping partition not in set $fromset or $outset : $thispart"
+                mbuSessionPartMark $thispart MBUMarkOtherSet
+                #could be, but problems when sets change: >>$outfile echo mbuSessionPartMark $thispart MBUMarkOtherSet
+            fi
+            continue
+        fi
+        if test -z "$thisfnc" ; then qReturnFail ; return 1 ; fi # shouldn't happen?
+
+        # Is fnc selected?
+        local choice=${fchoice[$thisfnc]}
+        case "$choice" in 
+            'y') qbug "selected partition $thispart"
+            ;;
+            'n') qbug "deselected partition $thispart"
+                mbuSessionPartMark "$frompart" MBUMarkDeselected
+                mbuSessionPartMark "$outpart" MBUMarkSourceSkipped
+                >>$outfile echo 'mbuSessionPartMark $fromset-'$thisfnc' MBUMarkDeselected'
+                >>$outfile echo 'mbuSessionPartMark $outset-'$thisfnc' MBUMarkSourceSkipped'
+                continue
+            ;;
+            *) qReturnFail "unhandled fnc flag $choice"
+                return 1
+            ;;
+        esac    # end selection filter
+
+        # Skip unhandled or non filesystems
+        local fstype=${mbuDevP_fstype[$thisdevname]}
+        if ! mbuFileSystemTypeIsMountable "$fstype" ; then
+            qbug "skipping $outpart : unsupported file system type $fstype"
+            if test "$fstype" = swap ; then
+                mbuSessionPartMark "$frompart" MBUMarkSwap
+                >>$outfile echo 'mbuSessionPartMark $fromset-'$thisfnc' MBUMarkSwap'
+            else
+                mbuSessionPartMark "$frompart" MBUMarkBadFs
+                >>$outfile echo 'mbuSessionPartMark $fromset-'$thisfnc' MBUMarkBadFs'
+            fi
+            mbuSessionPartMark "$outpart" MBUMarkSourceSkipped
+            >>$outfile echo 'mbuSessionPartMark $outset-'$thisfnc' MBUMarkSourceSkipped'
+            continue
+        fi
+        qbug "Backing $frompart to $outpart"
+        >>$outfile echo 'mbuPartSync partname=$fromset-'$thisfnc' partname=$outset-'$thisfnc
+        mbuSessionPartMark "$frompart" MBUMarkSource
+        mbuSessionPartMark "$outpart" MBUMarkTarget
+        partsdone="$partsdone $outpart"
+        >>$outfile echo 'fncsdone+=" '"$thisfnc"'"'
+        qbug "sync $frompart $outpart done"
+    done
+    >>$outfile echo 'mbuClean    # end with a clean slate!'
+    if test "$quser" = y ; then
+        ### quser "here is what we did for backup script: =========="
+        mbuSessionPrint prediction=y "SUMMARY OF THINGS TO DO"
+        ### quser "above was just for backup script, didn't do it (yet)  =========="
+    fi
+    >>$outfile echo '>>$mbuMasterLogFile echo $(date +%Y/%m/%d-%H:%M:%S) DONE- BACKUP FROM $fromset TO $outset : $fncsdone'
+    >>$outfile echo 'echo ---------------------------------------'
+    # Some final information to be viewed by operator at the end of the operation:
+    >>$outfile echo 'lsblk -o NAME,PARTLABEL,MOUNTPOINTS,FSUSE%,SIZE,UUID'
+    >>$outfile echo 'echo ---------------------------------------'
+    >>$outfile echo 'mbuSessionPrint "SUMMARY OF THINGS DONE"  # show user what happened'
+    >>$outfile echo 'local datestamp=$(date +%Y/%m/%d-%H:%M:%S)'
+    >>$outfile echo 'quser $datestamp ALL DONE OK using script generated at' $datestamp '.'
+    >>$outfile echo '} # end function'
+    >>$outfile echo 'customscript   # actually execute'
+    chmod +x $outfile   # make it executable
+    quser "Backup script written -- look at or execute $outfile"
+    qReturnOk "$outfile" ;   # return result is filepath of script file
+    return 0
+}
+
+##############################################################################
+# mbuBackup -- interactive front end to doing a backup
+#       Creates a backup script, and then executes it.
+#       Arguments are +/- those for mbuBackupScriptWrite ; use "help" for help.
+##############################################################################
+# Here is help beyond that for mbuBackupScriptWrite:
+mbuBackup_Help="
+ADDITIONAL OPTIONS for mbup / mbuBackup are:
+scriptonly={y|n} -- y to write output script file but do not execute it.
+
+NOTES:
+
+You can write your own custom two line script like:
+
+#!/bin/bash
+./mbup ask=m fselection=-bootfix,root,home,local
+
+... assuming you have partitions named xxx-root, xxx-home and xxx-local,
+and you want the backup disk to be made bootable.
+With ask=m it will ask questions only if it really has to.
+Or use ask=n to not be asked any questions at all.
+"
+mbuBackup()
+{
+    qEnter "$@"
+
+    # Options
+    local dohelp=n
+    local fselection=''   # requested selection of "partition functions"
+    local ask=${mbuask:-y}      # should script ask?
+    local bootfix=y             # do we fix bootability?
+    local scriptfile=''
+    local scriptonly=n
+    local helpoptspec='help:dohelp=y,-help:dohelp=y,--help:dohelp=y,'
+    qOption "$helpoptspec,fselection,bootfix,ask,scriptonly=y,o:scriptfile,"  "$@"
+    shift $qresult
+
+    # Get help out of the way
+    if test "$dohelp" = y ; then
+        qprint 
+        qprint "mbup [<opt>]...   -- perform backup of partitions of the active set."
+        qprint "        With no partitions selected by options, enters interactive"
+        qprint "        session with user (unless disabled by ask=n or ask=m)."
+        qprint
+        qprint "$mbuBackupScript_Help" 
+        qprint "$mbuBackup_Help" 
+        qReturnOk ; return 0
+    fi
+
+    # Clean up options
+    if test $# -gt 0 ; then qReturnFail "At: $*" ; return 1 ; fi
+  
+    # Possibly interact with user to select partition functions to backup
+    if test "$ask" = y || { test -z "$fselection" && test "$ask" = m ; } ; then
+        if ! mbuFncSelectionI fselection="$fselection" ; then
+            qReturnFail "Cannot proceed" ; return 1; fi
+        qResult fselection
+    fi
+    if test -z "$fselection" ; then
+        qReturnFail "No partitions selected" ; return 1 ; fi
+
+    # Write the backup script, passing it many of our arguments.
+    if ! mbuBackupScriptWrite fselection="$fselection" ask="$ask" bootfix="$bootfix" o="$scriptfile"
+        then qReturnFail "Cannot proceed" ; return 1 ; fi
+    qResult scriptfile
+
+    if test "$scriptonly" = y ; then
+        qprint $qPretty_green"Stopping after generating backup script: $scriptfile"$qPretty_off
+        qReturnOk ; return 0
+    fi
+
+    # Here we have a script file... execute it
+    quser Executing $scriptfile
+    if ! qrun $scriptfile ; then
+        quser "Attempting to clean up mounted files."
+        if ! qrun mbuClean ; then
+            qerror "Could not clean everything up!"
+        fi
+        qReturnFail "Terminating due to errors. Backup NOT completed. Goodbye!"
+        return 1
+    fi
+
+    # All DONE
+    quser $qPretty_green"FINISHED OK: $scriptfile AT $(date +%Y/%m/%d-%H:%M:%S)"$qPretty_off
+    quser "$qPretty_underline$qPretty_bold""DO NOT FORGET TO DISCONNECT OR TURN OFF THE BACKUP DISK!$qPretty_off"
+    qReturnOk ; return 0
+}
+
+
+##############################################################################
+#  mbuBackupWithLogFile -- perform backup, logging the result
+##############################################################################
+mbuBackupWithLogFile()
+{
+    qEnter "$@"
+    # sneak preview for help:
+    case "${1:-}" in
+        help|-help|--help) mbuBackup "$@"  2>&1 ; return 0 ;  ;;
+    esac
+    # Run with output directed to log file
+    quser $0: This is all being recorded in $mbuBackupLatestLogFile
+    # TODO : fix bug: failure of mbuBackup is not registered; we should die here
+    if ! mbuBackup "$@" 2>&1 | tee $mbuBackupLatestLogFile ;  then
+        qReturnFail ; return 1
+    fi
+    quser $0: This was all recorded in $mbuBackupLatestLogFile
+    qReturnOk ; return 0
+}
+
+
+##############################################################################
+# mbuPtypeToId <typespec>  -- convert to partition type uuid
+#               <typespec> may be uuid, linux ptype name, or gdisk ptype code
+#       Silently fails if it doesn't understand <typespec>
+#       Return value via qresult
+##############################################################################
+mbuPtypeToId()
+{
+    qEnter "$@"  # our standard way to begin a function
+    # TODO put translations into an array
+    local result='BADUUID'
+    local ptype="${1:-}" ; shift||true
+    case "$ptype" in
+        0fc63daf-8483-4772-8e79-3d69d8477de4|ext4|8300) 
+            result="0fc63daf-8483-4772-8e79-3d69d8477de4"
+        ;;
+        c12a7328-f81f-11d2-ba4b-00a0c93ec93b|efi|ef00)
+            result="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+        ;;
+        0657fd6d-a4ab-43c4-84e5-0933c84b4f4f|swap|8200)
+            result="0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"
+        ;;
+        '') qbug "mbuPtypeToId: missing ptype: $ptype"
+            return 1
+        ;;
+        *)      # not one of the supported ones
+            local len=$(echo "$ptype" | wc -c)
+            if test len = 37 ; then     # probably a uuid!
+                qbug "mbuPtypeToId unknown partition type, assuming ok: $ptype"
+                result="$ptype"   # just pass it back
+            else
+                qbug "mbuPtypeToId unknown partition type $ptype"
+            fi
+            return 1
+        ;;
+    esac
+    qReturnOk "$result" ;  return 0
+}
+##############################################################################
+# mbuPtypeToName <typespec>  -- convert to partition type mbu name
+#                       e.g. ext4, efi, swap
+#               <typespec> may be uuid, linux ptype name, or gdisk ptype code
+#       Silently fails if it doesn't understand <typespec>
+#       Return value via qresult
+##############################################################################
+mbuPtypeToName()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local result='BADNAME'
+    local ptype="${1:-}" ; shift||true
+    case "$ptype" in
+        0fc63daf-8483-4772-8e79-3d69d8477de4|ext4|8300) 
+            result="ext4"
+        ;;
+        c12a7328-f81f-11d2-ba4b-00a0c93ec93b|efi|ef00)
+            result="efi"
+        ;;
+        0657fd6d-a4ab-43c4-84e5-0933c84b4f4f|swap|8200)
+            result="swap"
+        ;;
+        '') qbug "mbuPtypeToName: missing ptype: $ptype"
+            return 1
+        ;;
+        *)      # not one of the supported ones
+            qbug "mbuPtypeToName unknown partition type $ptype"
+            return 1
+        ;;
+    esac
+    qReturnOk "$result"  ; return 0
+}
+
+
+
+##############################################################################
+# mbuFormatWipe [<opt>]... [=] [<devspec>]... -- 
+#               Erase file system(s) and/or partition table from device(s)
+#       <devspec> = input for mbuDevFind
+# See help message below for options.
+# 
+# NOTE: Does all reasonable sanity checks before wiping anything.
+# Fails if anything is mounted.
+#
+# CAUTION: it takes the operating system some time to catch up, even
+# after partprobe is invoked.
+##############################################################################
+mbuFormatWipe_Help='
+This functionally wipes out a disk or disk partition by erasing key
+areas in the disk or partition.
+Of course this is DANGEROUS, use with care.
+Refuses to proceed if it detects a mounted filesystem, but dangers abound.
+
+Usage: [<option>...] [=] <devspec>...
+Options in any order:
+    help|-help|--help   -- print this help message (only)
+    ask={y|n}}          -- y to ask user before proceeding
+Positional parameters (multiple allowed):
+    <devspec>  -- specification of a partition or disk device ala mbuDevFind
+'  # End of help message
+mbuFormatWipe()
+{
+    qEnter "$@"  # our standard way to begin a function
+
+    # Options:
+    local dohelp=n
+    local ask="${mbuask:-y}"
+    qOption 'ask,help:dohelp=y,-help:dohelp=y,--help:dohelp=y,' "$@"
+    shift $qresult
+
+    # Help option
+    if test "$dohelp" = y ; then
+        printf "%s\n" "$mbuFormatWipe_Help" 
+        printf "%s\n" "$mbuDevFind_SpecHelp"
+        qReturnOk ; return 0 
+    fi
+    if test "${1:-}" = '=' ; then shift ; fi    # optional separator
+    if test $# = 0 ; then
+        qReturnFail "Use 'help' for help message" ; return 1
+    fi
+
+    mbuDevRefreshMaybe
+    # Resolve input devices
+    if ! mbuDevFind "$@" ; then 
+        qReturnFail ; return 1 
+    fi
+    local selection ; qResult selection
+    if test -z "$selection" ; then
+        quser "No (valid) disk/partition selected... Goodbye!"
+        qReturnOk ; return 0
+    fi
+    # Pull in children (partitions when disk specified) as well!
+    local devname
+    for devname in $selection ; do
+        if ! mbuDevFind parentname="$devname" ; then
+            qReturnFail; return 1
+        fi
+        local children;  qResult children
+        selection="$selection $children"
+    done
+    # Run this through mbuDevFind again to clean it up
+    if ! mbuDevFind $selection ; then 
+        qReturnFail ; return 1 
+    fi
+    local selection ; qResult selection
+    # Put partitions first, disks last
+    #   Since logically one should erase a partition
+    #   before it becomes undefined by erasing the disk
+    #   partition table!
+    local parts=''
+    local disks=''
+    local devname
+    for devname in $selection ; do
+        local devtype="${mbuDevP_devtype[$devname]}"
+        case "$devtype" in
+            part) parts+=" $devname" ;;
+            disk) disks+=" $devname" ;;
+            # ignore anything else
+        esac
+    done
+    selection="$parts $disks"
+
+    # Refuse to do anything if any is busy
+    #   ... doing otherwise is a gateway to hell :~)
+    if ! mbuDevBusyCheck $selection ; then
+        qReturnFail ; return 1
+    fi
+
+    # interactive?
+    if test "$ask" != n ; then
+        qprint "THIS IS SERIOUS STUFF."
+        qprint "Prepare to wipe partitions/disks:"
+        local devname
+        for devname in $selection ; do
+            local partname="${mbuDevP_partname[$devname]}"
+            qprintf "%20s %s\n" "$devname" "$partname"
+            if ! mbuDevFind parentname="$devname" ; then
+                qReturnFail; return 1
+            fi
+        done
+        qUserRead promptbase='OK TO WIPE y/n ?' defaultvalue=n
+        local answer ; qResult answer
+        if test "$answer" != y ; then 
+            qReturnFail "You did not say y" ; return 1 
+        fi
+    fi
+
+    # Do the wiping
+    local fail=n
+    local devname
+    for devname in $selection ; do
+        local devpath="${mbuDevs[$devname]}"
+        # Now wipe us. Note wipefs just removes key data, which is fast.
+        quser "Wiping device $devname"
+        if ! qrun diag=quser wipefs -a "$devpath" ; then
+            qerror "Failure: wipefs $devpath" 
+            fail=y
+            # but keep going... do as much as we can...
+        fi
+    done
+    # Optional???
+    # Tell the operating system to look at everything
+    # NOTE, this might better be done in mbuDevRefreshForce,
+    # but in my experience partprobe only starts the discovery
+    # process before it returns, and it takes many seconds to complete.
+#?#    if ! partprobe "$devpath" ; then
+#?#        qbug "Ignoring: partprobe failed" 
+#?#    fi
+
+    mbuDevRefreshNeed
+    if test "$fail" = y ; then
+        qReturnFail "Unable to completely wipe everything" ; return 1
+    fi
+    qReturnOk ; return 0
+}
+##############################################################################
+# mbuFormatMisc <type> <partdev> -- Format a misc filesystem
+#       Some filesystems might require different options, so your
+#       luck may very
+##############################################################################
+mbuFormatMisc()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local fstype="${1:-}" ; shift||true
+    if test -z "$fstype" ; then
+        qReturnFail "missing arg"
+        return 1
+    fi
+    if mbuPtypeToName "$ptype" ; then qResult ptype ; fi
+    local devspec="${1:-}" ; shift||true
+    if ! mbuDevFind $devspec ; then
+        qReturnFail "Cannot find device from $devspec" ; return 1
+    fi
+    local devname ; qResult devname
+    if ! mbuDevBusyCheck "$devname" ; then
+        qReturnFail "Will not try to reformat mounted device: $devname" ; return 1
+    fi
+    local devpath=${mbuDevs[$devname]}
+    mbuDevRefreshNeed       # will need to refresh our disk info
+    if ! mkfs.$fstype $devpath ; then
+        qReturnFail "failed: mkfs.$fstype $devpath"
+        return 1
+    fi
+    qReturnOk ; return 0
+}
+##############################################################################
+# mbuFormatExt4 <partdev> -- Format normal linux filesystem 
+##############################################################################
+mbuFormatExt4()
+{
+    qEnter "$@"  # our standard way to begin a function
+    # TODO: answer yes to interactive sanity check questions
+    local devspec="${1:-}" ; shift||true
+    if ! mbuDevFind $devspec ; then
+        qReturnFail "Cannot find device from $devspec" ; return 1
+    fi
+    local devname ; qResult devname
+    if ! mbuDevBusyCheck "$devname" ; then
+        qReturnFail "Will not try to reformat mounted device: $devname" ; return 1
+    fi
+    local devpath=${mbuDevs[$devname]}
+    mbuDevRefreshNeed       # will need to refresh our disk info
+    if ! mkfs.ext4 $devpath ; then
+        qReturnFail "failed: mkfs.ext4 $1"
+        return 1
+    fi
+    qReturnOk ; return 0
+}
+##############################################################################
+# mbuFormatEfi <partdev> -- Format filesystem for EFI partition
+##############################################################################
+mbuFormatEfi()
+{
+    qEnter "$@"  # our standard way to begin a function
+    # Make a FAT32 partition for use for UEFI booting:
+    # (note: ??? also need to set 'boot' flag on partition.)
+    local devspec="${1:-}" ; shift||true
+    if ! mbuDevFind $devspec ; then
+        qReturnFail "Cannot find device from $devspec" ; return 1
+    fi
+    local devname ; qResult devname
+    if ! mbuDevBusyCheck "$devname" ; then
+        qReturnFail "Will not try to reformat mounted device: $devname" ; return 1
+    fi
+    local devpath=${mbuDevs[$devname]}
+    mbuDevRefreshNeed       # will need to refresh our disk info
+    if ! mkfs.fat -F 32 $devpath ; then
+        qReturnFail "failed: mkfs.fat -F 32 $devpath" 
+        return 1
+    fi
+    qReturnOk ; return 0
+}
+##############################################################################
+# mbuFormatSwap <partdev> -- Format swap partition
+##############################################################################
+mbuFormatSwap()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local devspec="${1:-}" ; shift||true
+    if ! mbuDevFind $devspec ; then
+        qReturnFail "Cannot find device from $devspec" ; return 1
+    fi
+    local devname ; qResult devname
+    if ! mbuDevBusyCheck "$devname" ; then
+        qReturnFail "Will not try to reformat mounted device: $devname" ; return 1
+    fi
+    local devpath=${mbuDevs[$devname]}
+    mbuDevRefreshNeed       # will need to refresh our disk info
+    if ! mkswap $devpath ; then
+        qReturnFail "failed: mkswap $devpath"
+        return 1
+    fi
+    qReturnOk ; return 0
+}
+##############################################################################
+# mbuFormatPartition <partdev> <ptype>  -- Format a partition partition
+#       <ptype> can be a short name such as "ext4" or the parttype uuid.
+#       See code below for supported partition types
+##############################################################################
+mbuFormatPartition()
+{
+    qEnter "$@"  # our standard way to begin a function
+    local thisdev="${1:-}" ; shift||true
+    local ptype="${1:-}" ; shift||true
+    # Translate to a name if we can, otherwise hope for the best
+    if mbuPtypeToName "$ptype" ; then qResult ptype ; fi
+    case "$ptype" in
+        '') qReturnFail "missing ptype: $ptype"
+            return 1
+        ;;
+        ext4)
+            if ! mbuFormatExt4 "$thisdev" ; then
+                qReturnFail "failed to format $ptype partition on $thisdev"
+                return 1
+            fi
+        ;;
+        efi)
+            if ! mbuFormatEfi "$thisdev" ; then
+                qReturnFail "failed to format $ptype partition on $thisdev"
+                return 1
+            fi
+        ;;
+        swap)
+            if ! mbuFormatSwap "$thisdev" ; then
+                qReturnFail "failed to format $ptype partition on $thisdev"
+                return 1
+            fi
+        ;;
+        *)      # not one of the supported ones, try our luck as follows:
+            if ! mbuFormatMisc "$ptype" "$thisdev" ; then
+                qReturnFail "failed to format $ptype partition on $thisdev"
+                return 1
+            fi
+        ;;
+    esac
+    quser "formatted partition $thisdev type=$ptype"
+    qReturnOk ; return 0
+}
+##############################################################################
+# mbuFormatTableHelp -- description of table needed for mbuFormatDisk
+##############################################################################
+mbuFormatTableHelp="
+The disk formatting table contains a table of output partitions, 
+with lines of the form:
+    PARTITION dnum pnum fnc psize ptype
+where
+    dnum is the disk number (disks are numbered starting with 1)
+    pnum is partition number to assign to the partition (a small integer >= 1)
+        Maximum pnum is probably 16 ?
+        For maximum sanity, list entries in order of pnum and avoid gaps
+        in pnum for the same dnum.
+    fnc is the function part of the partition name where the name
+        will be generated as <set>-<fnc> (<set> will be provided later)
+    psize is the integer partition size in BYTES;
+        Unless it begins with + or - in which case it is passed to gdisk
+        as is for end sector location... see gdisk man page.
+        Otherwise, it may be an integer with suffix M for megabtyes
+        (1024*1024 = mega) or G for gigabytes (1024*mega).
+        It is advised to use M with megabytes since this will ensure that
+        sector size is honored yet be small enough for precision.
+        NOTE do NOT give a number with a decimal point (gdisk barfs).
+    ptype is one of:
+        efi  -- the EFI partition required for booting
+        ext4 -- the usual linux filesystem
+        swap -- linux swap partition
+        <uuid> -- a magic string representing the use of the partition
+            according to established standards
+"       # end mbuFormatTableHelp
+##############################################################################
+# mbuFormatTableWrite [<opt>]...  -- generate an MBU disk format table
+#       See help message below for options.
+# On success, output filepath is returned via qresult.
+##############################################################################
+mbuFormatTabletWriteHelp='
+Creates a partition table file for later use with mbuFormat.
+You can modify the partition table file before using it, if you desire.
+
+This is part of the MBU backup system, but it may work even if your
+disk partitions are not named in an MBU compatible way.
+In the case of incompatible partition names, the entire partition name
+will be emitted as the "function" part (see MBU docs).
+
+OPTIONS are:
+help | -help | --help -- print help for this message (only).
+-d -- turn on all debug messages
+-o <outfile>  -- specify filepath of created backup script 
+            Default is $mbuOutDir/mbuformat.custom
+-frompset <set> -- based on all partitions of a partition set
+            Default is the partition set to which belongs
+            the partition holding the running linux root filesystem (/).
+            Note that the output file is independent of any 
+            specific partition set or partitions.
+    <set> is a partition set name in use on the system, or
+        a partition name in use of the system,
+        anything acceptable to mbuDevFind so long as it can resolve
+        to a partition hame.
+        If a partition name is passed this way, it is replaced by
+        the partition set component of the partition name.
+
+The most likely modification you may want to make to the generated table
+is to modify the the partition sizes.
+'  # END mbuFormatTabletWriteHelp ... beware of quote marks!
+# TODO ? maybe add filter argument, using mlu
+mbuFormatTableWrite()
+{
+    qEnter "$@"  # our standard way to begin a function
+    mbuDevRefreshMaybe
+    # We use some mbu global variables to implement some options:
+    local qbug=$qbug    # "local" to shield our changes from parent
+    local quser=$quser  # "local" to shield our changes from parent
+    local datestamp=$(date +%Y/%m/%d-%H:%M:%S)     # for diagnostics
+    local outfile="$mbuOutDir/mbuformat.table"   # default
+    local pset=''    # partition set to base table on
+    local basedisk=''   # disk device we based pset on
+
+    while true ; do
+        local option="${1:-}" ; shift||true
+        case "$option" in
+            '') break
+            ;;
+            -d)         # turn on debugs
+                qbug=y
+                quser=y
+            ;;
+            help|-help|--help) 
+                echo "$mbuFormatTabletWriteHelp" ; 
+                echo "$mbuFormatTableHelp" ;
+                return 0; 
+            ;;
+            -o) outfile="${1:-}" ; shift||true
+                if test -z "$outfile" ; then 
+                    qReturnFail "-o needs arg"  ; return 1 ; fi
+            ;;
+            -frompset) 
+                local basespec="${1:-}"; shift||true
+                pset=''   # not found yet
+                if test -z "$basespec" ; then 
+                    qReturnFail "-frompset needs arg"  ; return 1 
+                fi
+                case "$basespec" in
+                    *=* )       # must be an mbuDevFind spec
+                        if mbuDevFind match=unique "$basespec" ; then
+                            qReturnFail "Part. set not identified from: $basespec" 
+                            return 1
+                        fi
+                        local pdevname ; qResult pdevname
+                        pset="${mbuDevP_partset[$pdevname]}"
+                        basedisk="${mbuDevP_parentname[$pdevname]}"
+                        if test -z "$basedisk" ; then
+                            qReturnFail "Not a partition device: $pdevname" ; return 1
+                        fi
+                        continue
+                    ;;
+                esac
+                # might be a partition set name
+                if ! mbuDevFind "partset=$basespec" ; then
+                    qReturnFail ; return 1
+                fi
+                local pdevnames ; qResult pdevnames   # are there any?
+                if ! test -z "$pdevnames" ; then # there are some!
+                    pset="$basespec"    # this must be a pset!
+                    basedisk=''   # no particular base disk
+                    continue
+                fi
+                # might be a partition name
+                if ! mbuDevFind match=nonmultiple "partname=$basespec" ; then
+                    qReturnFail ; return 1
+                fi
+                local pdevname ; qResult pdevname   # is there such a partition?
+                if ! test -z "$pdevname" ; then # there are some!
+                    pset="${mbuDevP_partset[$pdevname]}"
+                    basedisk="${mbuDevP_parentname[$pdevname]}"
+                    continue
+                fi
+                qReturnFail "No match for $basespec" ; return 1
+            ;;
+            *) 
+                qReturnFail "invalid option: $option" ; return 1
+            ;;
+        esac
+    done
+
+    # Use default partition set if not specified
+    if test -z "$pset" ; then
+        if ! mbuDevFind / ; then
+            qReturnFail  ; return 1   # shouldnt happen
+        fi
+        local pdevname ; qResult pdevname
+        pset="${mbuDevP_partset[$pdevname]}"
+        basedisk="${mbuDevP_parentname[$pdevname]}"
+    fi
+    if test -z "$pset" ; then
+        qReturnFail ; return 1   # shouldnt happen
+    fi
+
+    # Find the list of partition devices sharing that partition set
+    # Note that this list will be in canonical order.
+    if ! mbuDevFind "partset=$pset" ; then
+        qReturnFail ; return 1
+    fi
+    local inpdevs ; qResult inpdevs
+    if test -z "$inpdevs" ; then
+        qReturnFail ; return 1       #shouldnt happen
+    fi
+
+    # Convert this into a list of disk devices without losing order
+    # The 0th element is unused, to simplify 1-based addressing (dnum).
+    # If basedisk was found we put it first. 
+    local -a disklist=( ZERO_UNUSED $basedisk )
+    local pdevname
+    for pdevname in $inpdevs ; do
+        local disk=${mbuDevP_parentname[$pdevname]}
+        if test -z "$disk" ; then qReturnFail; return 1; fi #shouldnt happen
+        local idisk
+        local newdisk=''
+        for idisk in ${!disklist[@]} ; do
+            if test "$idisk" = 0 ; then continue; fi    # don't use disklist[0]
+            local thisdisk=${disklist[$idisk]}
+            if test "$thisdisk" = "$disk" ; then
+                continue 2      # already in list; on to next device
+            fi
+        done
+        disklist+=( "$disk" )      # add to list of disks used
+    done
+    qbug "Found list of disks: ${disklist[*]}"
+
+    # Convert this into a list of partition devices,
+    if ! mbuDevFind "partset=$pset" ; then
+        qReturnFail ; return 1                # shoulndt happen
+    fi
+    local pdevs ; qResult pdevs
+    qbug "Before sorting, pdevs=$pdevs"
+    if test -z "$pdevs" ; then
+        qReturnFail ; return 1        # shouldnt happen
+    fi
+    # Now ordered canonical within disk, but with disk order as above
+    local -a pdevlist=( )     # list of partition devices
+    local -a pdnumist=( )     # list of disk numbers per pdev
+    local -a ppnumist=( )     # list of part numbers per pdev
+    local idisk
+    for idisk in ${!disklist[@]} ; do
+        if test "$idisk" = 0 ; then continue; fi  # don't use disklist[0]
+        # TODO %%% double check this logic
+        local -a dpdevlist; local -a pdevlist=( )     # list of partition devices
+        local -a dpdnumlist; local -a pdnumist=( )     # list of disk numbers per pdev
+        local -a dppnumlist; local -a ppnumist=( )     # list of part numbers per pdev
+        local disk=${disklist[$idisk]}
+        local pdevname
+        for pdevname in $pdevs ; do
+            local pnum=${mbuDevP_partnum[$pdevname]}
+            dpdevlist[$pnum]="$pdevname"
+            dpdnumlist[$pnum]="$idisk"
+            dppnumlist[$pnum]="$pnum"
+        done
+        pdevlist+=( ${dpdevlist[@]} )
+        pdnumlist+=( ${dpdnumlist[@]} )
+        ppnumlist+=( ${dppnumlist[@]} )
+    done
+    qbug "After sorting:"
+    qbug "pdevlist=${pdevlist[*]}"
+    qbug "pdnumlist=${pdnumlist[*]}"
+    qbug "ppnumlist=${ppnumlist[*]}"
+
+    # Write output file
+    if test -z "$basedisk" ; then
+        quser "writing file: $outfile based on partition set $pset"
+    else
+        quser "writing file: $outfile based on partition set $pset and disk $basedisk"
+    fi
+
+    rm -f $outfile      # remove old one so permissions are appropriate
+    mkdir -p $(dirname $outfile)  # create directory for it to live in as needed
+
+    # Comments at the top of output file
+    >$outfile  echo "########### MBU Disk Format Table #########"
+    >>$outfile echo "#   Custom MBU formatting table generated at $datestamp"
+    >>$outfile echo "#   Created from directory $mbuDir as: $outfile"
+    >>$outfile echo "#   All partitions of partition set $pset were used"
+    quser "All partitions of partition set $pset were used"
+    if ! test -z "$basedisk" ; then
+        >>$outfile echo "#   Partitions on disk $basedisk were put first"
+        quser "Partitions on disk $basedisk were put first"
+    fi
+    >>$outfile echo "#   CAUTION: This script generated automatically and may be out of date!"
+    # Add help message to output file  (description of file formatt)
+    echo "$mbuFormatTableHelp" | sed -e 's/^/# /' >>$outfile
+    # One more comment for the table:
+    >>$outfile printf "%s %4s %4s %-12s %14s %s\n" '#--------' dnum pnum fnc psize ptype
+
+    # Output the data table
+    for ipdev in ${!pdevlist[@]} ; do
+        local devname=${pdevlist[$ipdev]}       # partition device name, to look up properties
+        local dnum=${pdnumlist[$ipdev]}         # order in our list of disk
+        local pnum=${ppnumlist[$ipdev]}         # partition number of our partition device
+        # or: local pnum=${mbuDevP_partnum[$devname]}
+        local fnc=${mbuDevP_partfnc[$devname]}  # last part of the partition name
+        local nbytes=${mbuDevP_size[$devname]}  # partition size
+        local mb=$(expr $nbytes / 1024 / 1024)M   # convert to MB
+        local type=${mbuDevP_parttype[$devname]}
+        >>$outfile printf "%s %4s %4s %-12s %14s %s\n" 'PARTITION' $dnum $pnum $fnc $mb $type
+    done
+
+    >>$outfile echo "########### END MBU Disk Format Table #########"
+    quser "Format table written -- look at $outfile"
+    qReturnOk "$outfile"  ; return 0
+}
+##############################################################################
+# mbuFormatDisk [<opt>]... 
+#       Format entire disk based on data table
+#       See help message below.
+##############################################################################
+mbuFormatDiskHelp='
+This is part of the MBU backup system. 
+It will format a disk or set of disks based on a partition table file.
+
+Usage: mbuFormatDisk <ddev> <pset> <tablefile> [<opt>]...
+Partitions are named with <pset> and partition functions from the table
+
+OPTIONS <opt> are:
+
+help | -help | --help -- print help for this message (only).
+disk=<ddev> is the entire disk device file (not partition device file).
+    Multiple such disks can be specified by concatenating them
+    separted by commas (extraneous commas ignored).
+    The disks in order given match the table file dnum 
+    (disk number) fields (1, 2, etc.).
+    The disks can be specified in any way that is acceptable to
+    mbuDevFind.
+pset=<pset> is the partition set name to use when generating partition
+       names for the disk.
+tablefile=<tablefile> is the name of the file containing the partition table.
+tstring=<string> to pass the table directly as a string instead of via file
+debug=y -- turn on all debug messages
+fake=y -- do not actually format the disk, just show what would be done
+        (Note: the given disk must meet all pre-requisites).
+'  # END mbuFormatDiskHelp
+# TODO be smarter about target disks that are too small etc
+mbuFormatDisk()
+{
+    qEnter "$@"  # our standard way to begin a function
+    mbuDevRefreshMaybe
+    local qbug=$qbug    # "local" to shield our changes from parent
+    local quser=$quser  # "local" to shield our changes from parent
+    local datestamp=$(date +%Y/%m/%d-%H:%M:%S)     # for diagnostics
+    local qbug="$qbug"   # so we can make temporary changes
+
+    # Get options
+    local options=''
+    local dohelp=n ; options+='help:dohelp=y,-help:dohelp=y,--help:dohelp=y,'
+    options+='debug:qbug,'      # can directly set qbug this way
+    local fakeit=n ; options+='fake:fakeit,'
+    local ddevspec=''  ; options+='disk:ddevspec,'
+    local pset=''  ; options+='pset,'
+    local tablefile='' ; options+='tablefile,'
+    local tstring='' ; options+='tstring,'
+    qOption "$options" "$@" ; shift $qresult
+    if test $# -gt 0 ; then qReturnFail "Invalid args at: $*" ; return 1; fi
+
+    # Help option
+    if test "$dohelp" = y ; then
+        echo "$mbuFormatDiskHelp" ; 
+        echo "$mbuFormatTableHelp" ;
+        qReturnOk ; return 0
+    fi
+
+    # Get the table
+    local table=''              # content of table file
+    if test -n "$tablefile" ; then
+        if ! test -f "$tablefile" ; then
+            qerror "No such file: $tablefile" ; return 1
+        fi
+        table=$(cat $tablefile)
+    else
+        table="$tstring"
+    fi
+
+    # Sanity checks
+    if test -z "$ddevspec" ; then mbuReturnFail Need option disk=  ; return 1; fi
+    if test -z "$table" ; then mbuReturnFail Need option tablefile=  ; return 1; fi
+    if test -z "$pset" ; then mbuReturnFail Need option pset=  ; return 1; fi
+
+    # Get and check entire disk device
+    qSClean t=, v=ddevspec    # convert commas into spaces
+    local -a ddevs=( ZERO_UNUSED $ddevspec )
+    if test -z "${ddevs[1]:-}" ; then
+        qReturnFail "missing disk device arg(s)"
+        return 1
+    fi
+    # Sanity checks and clean up device specs
+    local ddev
+    local idisk
+    for idisk in ${!ddevs[@]} ; do
+        if test "$idisk" = 0 ; then continue ; fi  # first one is unused
+        ddev=${ddevs[$idisk]}
+        if ! mbuDevFind match=unique "$ddev" ; then 
+            qReturnFail "Invalid: $ddev" ; return 1; 
+        fi
+        local devname ; qResult devname
+        # Store the corrected name
+        ddevs[$idisk]="$devname"
+        # Now do sanity checcks
+        local devpath=${mbuDevs[$devname]}
+        if ! test -b "$devpath" ; then
+            qReturnFail "invalid or missing device file: $devpath" ; return 1
+        fi
+        local devtype=${mbuDevP_devtype[$devname]}
+        if ! test "$devtype" = disk ; then
+            qReturnFail "Not a disk: $devname" ; return 1
+        fi
+        # Prevent even trying to format an active disk
+        if ! mbuDevBusyCheck $devname ; then
+            qReturnFail "Device $devname is busy." ; return 1
+        fi
+    done
+    qbug "Disks: 1 ${ddevs[1]:-} 2 ${ddevs[2]:-} 3 ${ddevs[3]:-}"
+
+    # Break table into lines. 
+    local -a lines
+    IFS=$'\n' read -r -d '' -a lines <<<"$table" || qbug "Ignoring bash read error $? here."
+
+    # Make a pass through to see if sizes line up
+    local idisk
+    for idisk in ${!ddevs[@]} ; do
+        if test "$idisk" = 0 ; then continue ; fi       # first element unused
+        mbuDevRefreshMaybe       # ensure our info is up to date
+        local ddev=${ddevs[$idisk]}
+        local disksize="${mbuDevP_size[$ddev]}"
+        qbug "AT disk $idisk $ddev SIZE $disksize"
+        local psizesum=0        # sum of partition sizes for this disk
+        local lineno
+        for lineno in ${!lines[@]} ; do
+            local line="${lines[$lineno]}"
+            local key
+            local dnum
+            local pnum
+            local fnc
+            local psize
+            local ptype
+            <<<$line read -r key dnum pnum fnc psize ptype
+            case "$key" in
+                '') continue        # skip empty lines
+                ;;
+                '#'*) continue      # skip comments
+                ;;
+                PARTITION)  # good
+                ;;
+                *) # bad
+                    qReturnFail "invalid table line: $line"
+                    return 1
+                ;;
+            esac
+            if test "$dnum" = 0 ; then
+                qReturnFail "invalid disk number $dnum"
+                return 1
+            fi
+            local thisddev=${ddevs[$dnum]}
+            if test -z "$thisddev" ; then
+                qReturnFail "no disk specified for disk number $dnum"
+                return 1
+            fi
+            if ! test "$dnum" = "$idisk" ; then
+                continue
+            fi
+            # Add up all the partition sizes
+            case "$psize" in 
+                *K) 
+                    psize=${psize%?}    # strip the unit
+                    psize=$((psize * 1024))
+                ;;
+                *M)
+                    psize=${psize%?}    # strip the unit
+                    psize=$((psize * 1024 * 1024))
+                ;;
+                *G)
+                    psize=${psize%?}    # strip the unit
+                    psize=$((psize * 1024 * 1024 * 1024))
+                ;;
+                *) true   # hope for the best
+                ;;
+            esac
+            psizesum=$((psizesum + psize))
+        done
+        if test "$psizesum" = 0 ; then
+            qReturnFail ; return 1 ; fi     # shouldnt happen
+        # Error if too big ... gdisk fails badly.
+        # Unfortunately this test doesn't allow for overhead of
+        # the partition table etc.
+        # So it might succeed when really it should fail.
+        quser "AT disk $idisk $ddev SIZE $disksize bytes NEED $psizesum bytes"
+        if test $psizesum -gt $disksize ; then
+            qReturnFail "Partitions won't fit on disk $ddev" ; return 1
+        fi
+    done
+
+    # Now to do the formatting. Possibly do multiple disks
+    local idisk
+    for idisk in ${!ddevs[@]} ; do
+        if test "$idisk" = 0 ; then continue ; fi       # first element unused
+        mbuDevRefreshMaybe       # ensure our info is up to date
+        local ddev=${ddevs[$idisk]}
+        quser "FORMATTING disk $idisk $ddev"
+        # NOTE that mbuFormatWipe ensures device is NOT busy
+        if ! mbuFormatWipe ask=n "$ddev" ; then
+            qReturnFail "Cannot wipe disk $ddev" ; return 1
+        fi
+        mbuDevRefreshMaybe       # ensure our info is up to date
+        # Compose the input for gdisk
+        local gdiskfile="$mbuOutDir/mbu.gdisk"
+        quser "Writing temp file $gdiskfile"
+        qrun rm -f "$gdiskfile"
+        qrun mkdir -p $(dirname $gdiskfile)  # create directory for it to live in as needed
+        >$gdiskfile echo o           # Create new partition table
+        >>$gdiskfile echo y           # yes to proceed
+        local lineno
+        local gdiskweird=y
+        for lineno in ${!lines[@]} ; do
+            local line="${lines[$lineno]}"
+            local key
+            local dnum
+            local pnum
+            local fnc
+            local psize
+            local ptype
+            <<<$line read -r key dnum pnum fnc psize ptype
+            case "$key" in
+                '') continue        # skip empty lines
+                ;;
+                '#'*) continue      # skip comments
+                ;;
+                PARTITION)  # good
+                ;;
+                *) # bad
+                    qReturnFail "invalid table line: $line"
+                    return 1
+                ;;
+            esac
+            if test "$dnum" = 0 ; then
+                qReturnFail "invalid disk number $dnum"
+                return 1
+            fi
+            local thisddev=${ddevs[$dnum]}
+            if test -z "$thisddev" ; then
+                qReturnFail "no disk specified for disk number $dnum"
+                return 1
+            fi
+            if ! test "$dnum" = "$idisk" ; then
+                continue
+            fi
+            local ddevpath=${mbuDevs[$ddev]}
+            local pname="$pset-$fnc"
+            >>$gdiskfile echo n     # Create new partition
+            >>$gdiskfile echo $pnum  # parttion number
+            >>$gdiskfile echo '+0'   # first sector ... +0 to use next avail
+            local pendsector="$psize"
+            case "$pendsector" in
+                +*|-*) 
+                    quser "using custom gdisk size on partition $pnum; $pendsector"
+                ;;
+                *M|*G) 
+                    # prepend + to use relative addressing feature of gdisk based on size
+                    # M (megabyte) and G (gigabyte) acceptable to gdisk
+                    pendsector="+$pendsector"
+                ;;
+                *)  
+                    # + to use relative addressing feature of gdisk based on size
+                    # NOTE gdisk does NOT like large numbers!:
+                    # convert to megabytes and append a +   (see gdisk man page)
+                    pendsector='+'$(expr $psize / 1048576)M          # megabytes works with gdisk
+                ;;
+            esac
+            >>$gdiskfile echo $pendsector  # last sector, see gdisk documentation
+            local ptypecode='0000'  # default, partition with garbage p type code
+            if ! mbuPtypeToId $ptype ; then
+                qerror "do not know partition code for partition type $ptype"
+                quser "Ignoring error and continuing as best we can"
+            else
+                qResult ptypecode
+            fi
+            >>$gdiskfile echo "$ptypecode"      # note, can be a uuid or gdisk code
+            >>$gdiskfile echo c      # change partition name
+            if test "$gdiskweird" = y ; then
+                gdiskweird=n        # gdisk doesn't ask if only one part so far
+            else
+                >>$gdiskfile echo $pnum     # partition number
+            fi
+            >>$gdiskfile echo $pname          # partition name
+            >>$gdiskfile echo p         # print table -- for diagnostics only
+        done
+        >>$gdiskfile echo p         # print table -- for diagnostics only
+        >>$gdiskfile echo w         # write new table to disk! serious stuff
+        >>$gdiskfile echo y         # confirmation for write
+        # NOTE: gdisk actually quits after we confirm the write, so
+        # we never actually get to the following:
+        >>$gdiskfile echo p         # again, print table -- for diagnostics only
+        >>$gdiskfile echo q         # quit gdisk
+    
+        # Now run gdisk
+        qrun mbuDevRefreshNeed       # will need to refresh our disk info
+        if test "$fakeit" = y ; then
+            quser "NOT REALLY partitioning disk; see $gdiskfile for gdisk instructions"
+        else
+            qbug "running gdisk on $ddevpath , Stdin from $gdiskfile"
+            if ! qrun diag=quser <"$gdiskfile" gdisk "$ddevpath" ; then
+                qReturnFail "gdisk failed to partition disk"
+                return 1
+            fi
+        fi
+        quser "partitioned disk ok: $ddev"
+        mbuDevRefreshNeed       # again, just in case
+    
+        # Now format file systems
+        for lineno in ${!lines[@]} ; do
+            local line="${lines[$lineno]}"
+            local key
+            local dnum
+            local pnum
+            local fnc
+            local psize
+            local ptype
+            <<<$line read -r key dnum pnum fnc psize ptype
+            case "$key" in
+                '') continue        # skip empty lines
+                ;;
+                '#'*) continue      # skip comments
+                ;;
+                PARTITION)  # good
+                ;;
+                *) # bad
+                    qReturnFail "invalid table line: $line"
+                    return 1
+                ;;
+            esac
+            if ! test "$dnum" = "$idisk" ; then
+                continue
+            fi
+            local thisdev="$ddev$pnum"  # ASSUME we just add partition number
+            local pname="$pset-$fnc"
+            if test "$fakeit" = y ; then
+                quser "NOT REALLY FORMATTING PARTION $pname of type $ptype on $thisdev"
+            else
+                if ! qrun mbuFormatPartition "$thisdev" "$ptype" ; then
+                    qReturnFail "partition format failure for line: $line"
+                    return 1
+                fi
+            fi
+        done
+    done        # end idisk loop through disks
+
+    qrun mbuDevRefreshNeed       # once more, just in case
+    quser "reformatted disks and partitions OK"
+    qReturnOk ; return 0
+}
+
+
+##############################################################################
+# mbuFormatI -- ask user some questions and then format disk(s)
+##############################################################################
+mbuFormatI_Help='
+Help for mbuformat / mbuFormatI :
+
+Interactive session to format a disk to be a new backup disk.
+Here are the steps:
+
+(1) You have the option of re-reading a partition table file, or creating
+a new one.  The new one is created based entirely upon the current active
+partition set. You may need to (copy and) modify it if your new disk will
+differ significantly from your active disk (e.g. size). This is discussed
+in greater detail in mbu-README.txt
+You do not need to have a new disk connected for this step.
+
+(2) As discussed in mbu-README.txt, you should attach the new disk(s),
+wait for the operating system to recognize them, and then enter the disk
+device names (e.g. sdb, sdc etc.) in the order that you want them used.
+The first one will be used to backup the active Linux root partition and
+accompanying partitions.
+
+(3) You will be asked for a new partition set name, generally one that
+you have not used before.
+
+(4) The formatting operation proceeds. Assuming it is successful, the 
+new disk(s) will have partitions named appropriately, and file systems
+created, but will be empty and not have the correct UUIDs for bootability.
+You will be prompted if you want to run mbup to fix this.
+If you dont then you can run mbup at a later time to fix it.
+
+(5) After mbup is successfuly completed, the new disk(s) are ready for use.
+Be sure to disconnect the new disks when not needed to avoid future confusion.
+
+Usage: [<option>]...
+
+Options in any order:
+    help|-help|--help   -- print this help message
+
+Positional parameters:
+    None.
+'  # End of help message
+mbuFormatI()
+{
+    qEnter "$@"  # our standard way to begin a function
+    # Primary local variables:
+    local result=''   # what we will return if successful
+
+    # Options:
+    dohelp=n
+    qOption 'help:dohelp=y,-help:dohelp=y,--help:dohelp=y' "$@" ; shift $qresult
+    if test $# -gt 0 ; then qReturnFail "Extra args: $@" ; return 1; fi
+
+    # Help option
+    if test "$dohelp" = y ; then
+        printf "%s\n" "$mbuFormatI_Help" 
+        qReturnOk ; return 0
+    fi
+
+    mbuActiveSetNameFind || true
+    local fromset; qResult fromset
+    
+    ## %%%%%%%% TODO  maybe...
+    ## %%%%% give choices (1) use existing table file
+    ## %%%                (2) create table file based on entire disk 
+    ##                                  then ask which disk
+    ##                    (3) create table file based on partition set
+    ##                          then ask for pset
+    local mbuformatPrompt='MBUFORMAT---->'
+
+    qprint "MBUFORMAT: ENTER filepath of MBU formatting table (if you have one)"
+    qprint "... or just ENTER to make new one:"
+    local tablefile=''
+    qrun r=tablefile qUserRead promptbase="$mbuformatPrompt"
+    
+    if test -n "$tablefile" ; then
+        if ! test -f "$tablefile" ; then
+            qReturnFail "No such file: $tablefile" ; return 1
+        fi
+    else
+        # table is independent of device and pset
+        if ! mbuFormatTableWrite  ; then
+            qerror "FAILED to write formatting table file!" ; return 1 ; fi
+        qResult tablefile
+        if test -z "$tablefile" ; then
+            qerror "Unexpected error, no table file name"
+            return 1
+        fi
+        qprint "HERE is the resulting file $tablefile"
+        cat $tablefile
+        qprint "PLEASE EXAMINE formatting script file at $tablefile (shown above)"
+        qprint "You can modify it in another window if you want (save your changes elsewhere for the future)"
+        qprint "MBUFORMAT: OK to continue? y/n:"
+        qrun r=answer qUserRead promptbase="$mbuformatPrompt y/n : "
+        case "$answer" in 
+            y|Y) true
+            ;;
+            *) qReturnFail 'You did not say "y" ... Goodbye!' 
+                return 1
+            ;;
+        esac
+    fi
+    
+    # may be required if we aborted previously:
+    mbuClean || qprint "MBFORMAT Ignoring mbuClean error"
+    
+    local diskdev=''
+    lsblk -o NAME,PARTLABEL,MOUNTPOINTS,FSUSE%,SIZE,UUID
+    qprint "MBUFORMAT: Above are connected disks, see which is your new disk!"
+    qprint "MBUFORMAT: [Sometimes they don't show up for ten seconds or more]"
+    qprint "MBUFORMAT: Also ensure your new disk(s) is/are BIG enough!"
+    qprint "MBUFORMAT: ENTER device name e.g. sdb"
+    qprint "MBUFORMAT: ... or multiple device names for multi-disk backup,"
+    qprint "MBUFORMAT: ...... in the order as listed in $tablefile"
+    qrun r=diskdev qUserRead promptbase="$mbuformatPrompt"
+    if test -z "$diskdev" ; then
+        qprint Goodbye.
+        exit 1
+    fi
+    qprint "MBUFORMAT: ENTER new partition set name, USUALLY one NOT used before!"
+    qrun r=pset qUserRead promptbase="$mbuformatPrompt"
+    if test -z "$pset" ; then
+        qprint Goodbye.
+        exit 1
+    fi
+
+    >>$mbuMasterLogFile qprint `date +%Y/%m/%d-%H:%M:%S` START FORMAT $pset
+    if ! mbuFormatDisk fake=n disk="$diskdev" pset="$pset" tablefile="$tablefile" ; then
+        qerror "FAILED while formatting using: $diskdev $pset $tablefile"
+        exit 1
+    fi
+    >>$mbuMasterLogFile qprint `date +%Y/%m/%d-%H:%M:%S` DONE- FORMAT $pset
+
+    qprint "MBUFORMAT: OK to run ./mbup to copy files and repair bootability? y/n:"
+    qrun r=answer qUserRead promptbase="$mbuformatPrompt y/n :"
+    case "$answer" in 
+        y|Y) true
+        ;;
+        *) 
+            quser "NOW RUN ./mbup TO COPY OVER FILES AND MAKE BOOTABLE! Goodbye!"
+            exit 0
+        ;;
+    esac
+
+    if ! ./mbup ; then
+        qerror "FAILED while to backup to our new disk"
+        exit 1
+    fi
+    
+    qprint $0: DONE FORMATTING/SYNCING OK `date +%Y/%m/%d-%H:%M:%S`
+    qprint $0: "$qPretty_underline$qPretty_bold""DO NOT FORGET TO DISCONNECT OR TURN OFF THE BACKUP DISK!$qPretty_off"
+    qReturnOk ; return 0
+}
+
+##############################################################################
+# mbuFormatI_WithLogFile -- mbuFormatI wrapped with logging
+##############################################################################
+mbuFormatI_WithLogFile()
+{
+    qEnter "$@"
+    # sneak preview for help:
+    case "${1:-}" in
+        help|-help|--help) mbuFormatI "$@"  2>&1 ; return 0  ;;
+    esac
+    quser This is all being recorded in $mbuFormatLatestLogFile
+    # the following is copied into log file
+    if ! mbuFormatI "$@" 2>&1 | tee $mbuFormatLatestLogFile ; then 
+        qReturnFail ; return 1
+    fi
+    quser This was all recorded in $mbuFormatLatestLogFile
+    qReturnOk ; return 0
+}
+
+
+
+
+##############################################################################
+# mbuTrapHandler -- cleanup on program exception.
+##############################################################################
+mbuTrapHandler()
+{
+    quser "Cleaning up mounted partitions and such..."
+    mbuClean
+    return 0
+}
+
+##############################################################################
+# Here is the only directly executed code (not in a subroutine) apart from
+# the variable assignments at the top.
+qTrapHandlerAdd mbuTrapHandler  # for cleanup
+qStart - "$@"    # Run command if and only if we're the top level
+
+############# End of File... return what qStart returns...
+############# Do not put exit here!!! Do not put return here either!!!!
+# MBU Release mbu-20251115
