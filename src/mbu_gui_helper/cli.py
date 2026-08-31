@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from mbu_gui.disks import parse_lsblk
-from mbu_gui.paths import home_for_helper, resolve_paths
+from mbu_gui.paths import MbuPaths, home_for_helper, resolve_paths
 from mbu_gui_helper.commands import (
     format_disk_argv,
     format_table_argv,
@@ -108,19 +108,43 @@ def _pkexec_ids(environ: Mapping[str, str]) -> tuple[int, int] | None:
     return uid, gid
 
 
-def chown_state_to_pkexec_uid(root: Path, environ: Mapping[str, str]) -> None:
-    ids = _pkexec_ids(environ)
-    if ids is None or not root.exists():
-        return
-    uid, gid = ids
-    paths = [root]
-    if root.is_dir():
-        paths.extend(root.rglob("*"))
-    for path in paths:
+def _chown(path: Path, uid: int, gid: int) -> None:
+    try:
+        os.chown(path, uid, gid, follow_symlinks=False)
+    except (OSError, TypeError):
+        # Python <3.13 os.chown may not take follow_symlinks on all platforms.
         try:
             os.chown(path, uid, gid)
         except OSError:
-            continue
+            return
+
+
+def chown_state_to_pkexec_uid(paths: MbuPaths, environ: Mapping[str, str]) -> None:
+    """Chown helper state dirs so the GUI user can read logs.
+
+    Never recurse into mount_dir: that directory holds mounted backup
+    filesystems (and possibly a symlink to /).
+    """
+    ids = _pkexec_ids(environ)
+    if ids is None:
+        return
+    uid, gid = ids
+    targets = [
+        paths.state_dir,
+        paths.log_dir,
+        paths.out_dir,
+        paths.mount_dir,
+    ]
+    for directory in (paths.log_dir, paths.out_dir):
+        if directory.is_dir():
+            for child in directory.iterdir():
+                if child.is_symlink():
+                    continue
+                if child.is_file():
+                    targets.append(child)
+    for path in targets:
+        if path.exists() or path.is_symlink():
+            _chown(path, uid, gid)
 
 
 def main(
@@ -138,7 +162,7 @@ def main(
     env = mbu_environ(paths, environ)
     for directory in (paths.log_dir, paths.out_dir, paths.mount_dir):
         directory.mkdir(parents=True, exist_ok=True)
-    chown_state_to_pkexec_uid(paths.state_dir, environ)
+    chown_state_to_pkexec_uid(paths, environ)
     try:
         return _dispatch(
             args,
@@ -152,7 +176,7 @@ def main(
         print(e)
         return 2
     finally:
-        chown_state_to_pkexec_uid(paths.state_dir, environ)
+        chown_state_to_pkexec_uid(paths, environ)
 
 
 def _dispatch(args, *, paths, env, lsblk_data, environ, run) -> int:

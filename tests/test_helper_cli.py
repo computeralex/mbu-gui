@@ -151,14 +151,24 @@ def test_chown_state_dirs_to_pkexec_uid(tmp_path, monkeypatch):
         assert uid == 1000
         return SimpleNamespace(pw_dir=str(home), pw_gid=1000)
 
-    def fake_chown(path, uid, gid):
-        owned.append((str(path), uid, gid))
+    def fake_chown(path, uid, gid, follow_symlinks=True):
+        owned.append((str(path), uid, gid, follow_symlinks))
 
     monkeypatch.setattr("mbu_gui.paths.pwd.getpwuid", getpwuid)
     monkeypatch.setattr("mbu_gui_helper.cli.pwd.getpwuid", getpwuid)
     monkeypatch.setattr("mbu_gui_helper.cli.os.chown", fake_chown)
     env = _env(tmp_path)
     env["PKEXEC_UID"] = "1000"
+    state = home / ".local/share/mbu-gui"
+    (state / "log").mkdir(parents=True)
+    (state / "out").mkdir(parents=True)
+    mount = state / "mount"
+    mount.mkdir(parents=True)
+    trapped = mount / "bak1-root"
+    trapped.mkdir()
+    (trapped / "passwd").write_text("should not be chowned")
+    (state / "log" / "mbu.log").write_text("ok")
+    (state / "out" / "table").write_text("t")
     code = main(
         ["clean"],
         environ=env,
@@ -166,13 +176,16 @@ def test_chown_state_dirs_to_pkexec_uid(tmp_path, monkeypatch):
         run=lambda *a, **k: 0,
     )
     assert code == 0
-    state = home / ".local/share/mbu-gui"
-    chowned = {Path(p) for p, uid, gid in owned}
+    chowned = {Path(p) for p, uid, gid, _ in owned}
     assert state in chowned
     assert state / "log" in chowned
     assert state / "out" in chowned
     assert state / "mount" in chowned
-    assert all(uid == 1000 and gid == 1000 for _, uid, gid in owned)
+    assert state / "log" / "mbu.log" in chowned
+    assert state / "out" / "table" in chowned
+    assert trapped not in chowned
+    assert trapped / "passwd" not in chowned
+    assert all(uid == 1000 and gid == 1000 and follow is False for _, uid, gid, follow in owned)
 
 
 def test_no_chown_without_pkexec_uid(tmp_path, monkeypatch):
