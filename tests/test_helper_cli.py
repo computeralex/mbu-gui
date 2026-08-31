@@ -55,6 +55,27 @@ def test_format_disk_allows_sdb(tmp_path, capsys):
     assert "mbuFormatTableWrite" in out
     assert "mbuFormatDisk" in out
     assert "disk=sdb" in out
+    assert "fake-mbuclean" in out
+
+
+def test_format_disk_cleans_after_format_failure(tmp_path):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[0] == "./mbulib" and "mbuFormatDisk" in argv:
+            return 7
+        return 0
+
+    code = main(
+        ["format-disk", "--disk", "sdb", "--pset", "bak1"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=run,
+    )
+    assert code == 7
+    assert ["./mbuclean"] in calls
+    assert any("mbuFormatDisk" in argv for argv in calls)
 
 
 def test_label_live_refuses_sdb(tmp_path, capsys):

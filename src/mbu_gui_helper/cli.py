@@ -128,10 +128,12 @@ def _dispatch(args, *, paths, env, lsblk_data, environ, run) -> int:
 
     inventory = _load_inventory(lsblk_data, environ)
 
-    if args.command == "backup":
-        up = invoke(mbup_argv(args.fselection))
+    def then_clean(primary: int) -> int:
         clean = invoke(mbuclean_argv())
-        return up if up != 0 else clean
+        return primary if primary != 0 else clean
+
+    if args.command == "backup":
+        return then_clean(invoke(mbup_argv(args.fselection)))
 
     if args.command == "clean":
         return invoke(mbuclean_argv())
@@ -145,10 +147,12 @@ def _dispatch(args, *, paths, env, lsblk_data, environ, run) -> int:
     if args.command == "format-disk":
         assert_not_live_disk(args.disk, inventory)
         table_code = invoke(format_table_argv())
-        if table_code != 0:
-            return table_code
-        tablefile = str(paths.out_dir / "mbuformat.table")
-        return invoke(format_disk_argv(args.disk, args.pset, tablefile))
+        format_code = 0
+        if table_code == 0:
+            tablefile = str(paths.out_dir / "mbuformat.table")
+            format_code = invoke(format_disk_argv(args.disk, args.pset, tablefile))
+        primary = table_code if table_code != 0 else format_code
+        return then_clean(primary)
 
     if args.command == "label-live":
         planned = []
