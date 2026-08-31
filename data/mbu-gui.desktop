@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=MBU Backup
+Comment=Bootable disk backup
+Exec=/usr/bin/mbu-gui
+Icon=/usr/share/mbu-gui/mbu-icon.png
+Terminal=false
+Categories=System;
