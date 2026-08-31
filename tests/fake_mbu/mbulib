@@ -1,0 +1,8 @@
+#!/bin/bash
+echo "fake-mbulib $*"
+if test "$1" = "mbuFormatTableWrite"; then
+  mkdir -p "$mbuOutDir"
+  echo "# fake table" > "$mbuOutDir/mbuformat.table"
+  exit 0
+fi
+exit 0

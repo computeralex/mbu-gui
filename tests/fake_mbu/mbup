@@ -1,0 +1,6 @@
+#!/bin/bash
+echo "fake-mbup args: $*"
+echo "$(date +%Y/%m/%d-%H:%M:%S) START BACKUP FROM main TO bak1"
+echo "home/alex/.bashrc"
+echo "$(date +%Y/%m/%d-%H:%M:%S) DONE- BACKUP FROM main TO bak1 : root home"
+exit 0

@@ -1,0 +1,4 @@
+#!/bin/bash
+echo "fake-mbumount $*"
+mkdir -p "${mbuMountDir:-.}/$1-root"
+exit 0
