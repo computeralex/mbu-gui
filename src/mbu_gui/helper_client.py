@@ -19,8 +19,8 @@ def direct_argv(helper_path: Path, helper_args: list[str]) -> list[str]:
     return [str(helper_path), *helper_args]
 
 
-def failed_command_message(exit_code: int) -> str:
-    return f"The backup command failed (exit {exit_code})."
+def failed_command_message(exit_code: int, noun: str = "backup") -> str:
+    return f"The {noun} command failed (exit {exit_code})."
 
 
 def explain_helper_failure(
@@ -29,6 +29,7 @@ def explain_helper_failure(
     *,
     helper_exists: bool,
     pkexec_exists: bool,
+    noun: str = "backup",
 ) -> str:
     if not helper_exists:
         return (
@@ -44,7 +45,7 @@ def explain_helper_failure(
         or (exit_code in (126, 127) and "cancel" in stderr_l)
     ):
         return "Administrator permission was cancelled. Nothing was changed."
-    return failed_command_message(exit_code)
+    return failed_command_message(exit_code, noun)
 
 
 def which_helper() -> Path | None:

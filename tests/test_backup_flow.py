@@ -39,6 +39,33 @@ def test_success_shows_unplug():
     assert not w.unplugBanner.isHidden()
 
 
+def test_success_reloads_last_run_label():
+    app()
+    from mbu_gui.logs import LastRun
+
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    last = LastRun(
+        timestamp="2026/01/02-03:04:05",
+        from_set="main",
+        to_set="bak1",
+        functions="root,home",
+        ok=True,
+    )
+    w = MainWindow(
+        inventory=inv,
+        last_run=None,
+        helper_exists=True,
+        pkexec_exists=True,
+        start_process=lambda argv: None,
+        helper_path=Path("/usr/lib/mbu-gui/mbu-gui-helper"),
+        reload_inventory=lambda: inv,
+        reload_last_run=lambda: last,
+    )
+    w._run_backup_with_fselection("root")
+    w.on_helper_finished(0)
+    assert w.lastRunLabel.text() == "Last backup: 2026/01/02-03:04:05  main → bak1"
+
+
 def test_failure_stays_on_screen():
     app()
     inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())

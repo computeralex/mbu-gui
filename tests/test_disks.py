@@ -1,4 +1,5 @@
 # tests/test_disks.py
+from dataclasses import replace
 from pathlib import Path
 
 from mbu_gui.disks import (
@@ -75,3 +76,25 @@ def test_candidate_backup_disks_excludes_live():
 def test_empty_inventory_reason():
     inv = Inventory.empty("lsblk failed")
     assert inv.start_blocked_reason == "lsblk failed"
+
+
+def test_candidate_backup_disks_empty_when_live_unknown():
+    inv = Inventory.empty("lsblk failed")
+    assert candidate_backup_disks(inv) == []
+    named = _load("lsblk_named.json")
+    unknown = replace(named, live_disk=None)
+    assert unknown.disks
+    assert candidate_backup_disks(unknown) == []
+    no_root = _load("lsblk_no_root.json")
+    assert no_root.live_disk is None
+    assert candidate_backup_disks(no_root) == []
+
+
+def test_luks_lvm_root_marks_sda_live_and_not_a_format_candidate():
+    inv = _load("lsblk_luks_lvm.json")
+    assert inv.live_disk == "sda"
+    names = [d.name for d in candidate_backup_disks(inv)]
+    assert "sda" not in names
+    assert names == ["sdb"]
+    part_names = [p.name for d in inv.disks if d.name == "sda" for p in d.partitions]
+    assert part_names == ["sda1", "sda2", "sda3"]

@@ -149,7 +149,7 @@ def test_mount_failure_no_unplug():
     w.browsePage.setList.setCurrentRow(0)
     w.browsePage.mountButton.click()
     w.on_mount_finished(1)
-    assert failed_command_message(1) in w.logView.toPlainText()
+    assert failed_command_message(1, "mount") in w.logView.toPlainText()
     assert w.browsePage.mounted is False
     assert not w.browsePage.openButton.isEnabled()
     assert w.unplugBanner.isHidden()

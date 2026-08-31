@@ -117,6 +117,8 @@ def propose_labels(inventory: Inventory, set_name: str) -> list[tuple[Partition,
 
 
 def candidate_backup_disks(inventory: Inventory) -> list[Disk]:
+    if inventory.live_disk is None:
+        return []
     return [disk for disk in inventory.disks if disk.name != inventory.live_disk]
 
 
@@ -125,9 +127,10 @@ def load_lsblk(text: str) -> Inventory:
 
 
 def parse_lsblk(data: dict[str, Any]) -> Inventory:
-    disks = _disks_from_blockdevices(data.get("blockdevices") or [])
-    live_part = _live_partition(disks)
-    live_disk = live_part.disk if live_part is not None else None
+    blockdevices = data.get("blockdevices") or []
+    disks = _disks_from_blockdevices(blockdevices)
+    live_disk = _live_disk_name(blockdevices)
+    live_part = _live_partition(disks, live_disk, blockdevices)
     live_parsed = split_mbu_label(live_part.partlabel) if live_part is not None else None
     live_set = live_parsed[0] if live_parsed is not None else None
     unnamed_live = live_parsed is None
@@ -195,9 +198,45 @@ def _partition_from_node(node: dict[str, Any], disk_name: str) -> Partition:
     )
 
 
-def _live_partition(disks: list[Disk]) -> Partition | None:
+def _has_mountpoint(node: dict[str, Any], mount: str) -> bool:
+    if node.get("mountpoint") == mount:
+        return True
+    for child in node.get("children") or []:
+        if _has_mountpoint(child, mount):
+            return True
+    return False
+
+
+def _live_disk_name(blockdevices: list[dict[str, Any]]) -> str | None:
+    for dev in blockdevices:
+        if dev.get("type") != "disk":
+            continue
+        if _has_mountpoint(dev, "/"):
+            return dev["name"]
+    return None
+
+
+def _live_partition(
+    disks: list[Disk],
+    live_disk: str | None,
+    blockdevices: list[dict[str, Any]],
+) -> Partition | None:
+    if live_disk is None:
+        return None
+    part_name = None
+    for dev in blockdevices:
+        if dev.get("type") != "disk" or dev.get("name") != live_disk:
+            continue
+        for node in _walk(dev):
+            if node.get("type") == "part" and _has_mountpoint(node, "/"):
+                part_name = node.get("name")
+                break
     for disk in disks:
+        if disk.name != live_disk:
+            continue
         for part in disk.partitions:
+            if part_name is not None and part.name == part_name:
+                return part
             if part.mountpoint == "/":
                 return part
     return None

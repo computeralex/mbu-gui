@@ -1,0 +1,44 @@
+{
+  "blockdevices": [
+    {
+      "name": "sda",
+      "path": "/dev/sda",
+      "type": "disk",
+      "size": "256G",
+      "model": "Samsung SSD",
+      "children": [
+        {
+          "name": "sda1",
+          "path": "/dev/sda1",
+          "type": "part",
+          "size": "256G",
+          "fstype": "ext4",
+          "mountpoint": null,
+          "partlabel": "main-root",
+          "partn": 1,
+          "uuid": "AAAA"
+        }
+      ]
+    },
+    {
+      "name": "sdb",
+      "path": "/dev/sdb",
+      "type": "disk",
+      "size": "500G",
+      "model": "Backup Drive",
+      "children": [
+        {
+          "name": "sdb1",
+          "path": "/dev/sdb1",
+          "type": "part",
+          "size": "500G",
+          "fstype": "ext4",
+          "mountpoint": null,
+          "partlabel": "bak1-root",
+          "partn": 1,
+          "uuid": "BBBB"
+        }
+      ]
+    }
+  ]
+}

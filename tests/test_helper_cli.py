@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 import json
 import os
 import stat
@@ -42,6 +43,38 @@ def test_format_disk_refuses_live(tmp_path, capsys):
     )
     assert code == 2
     assert "contains /" in capsys.readouterr().out
+
+
+def test_format_disk_refuses_when_live_unknown(tmp_path, capsys):
+    code = main(
+        ["format-disk", "--disk", "sdb", "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_no_root.json"),
+    )
+    assert code == 2
+    assert "contains /" in capsys.readouterr().out
+
+
+def test_format_disk_refuses_luks_lvm_live_sda(tmp_path, capsys):
+    code = main(
+        ["format-disk", "--disk", "sda", "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_luks_lvm.json"),
+    )
+    assert code == 2
+    assert "contains /" in capsys.readouterr().out
+
+
+def test_format_disk_allows_sdb_when_root_is_luks_lvm(tmp_path, capsys):
+    code = main(
+        ["format-disk", "--disk", "sdb", "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_luks_lvm.json"),
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "mbuFormatDisk" in out
+    assert "disk=sdb" in out
 
 
 def test_format_disk_allows_sdb(tmp_path, capsys):
@@ -108,3 +141,51 @@ def test_label_live_sfdisk_argv(tmp_path):
     assert captured[0][0] == "sfdisk"
     assert "--part-label" in captured[0]
     assert captured[0] == ["sfdisk", "--part-label", "/dev/sda", "2", "main-root"]
+
+
+def test_chown_state_dirs_to_pkexec_uid(tmp_path, monkeypatch):
+    home = tmp_path / "axel"
+    owned = []
+
+    def getpwuid(uid):
+        assert uid == 1000
+        return SimpleNamespace(pw_dir=str(home), pw_gid=1000)
+
+    def fake_chown(path, uid, gid):
+        owned.append((str(path), uid, gid))
+
+    monkeypatch.setattr("mbu_gui.paths.pwd.getpwuid", getpwuid)
+    monkeypatch.setattr("mbu_gui_helper.cli.pwd.getpwuid", getpwuid)
+    monkeypatch.setattr("mbu_gui_helper.cli.os.chown", fake_chown)
+    env = _env(tmp_path)
+    env["PKEXEC_UID"] = "1000"
+    code = main(
+        ["clean"],
+        environ=env,
+        lsblk_data=_lsblk(),
+        run=lambda *a, **k: 0,
+    )
+    assert code == 0
+    state = home / ".local/share/mbu-gui"
+    chowned = {Path(p) for p, uid, gid in owned}
+    assert state in chowned
+    assert state / "log" in chowned
+    assert state / "out" in chowned
+    assert state / "mount" in chowned
+    assert all(uid == 1000 and gid == 1000 for _, uid, gid in owned)
+
+
+def test_no_chown_without_pkexec_uid(tmp_path, monkeypatch):
+    owned = []
+    monkeypatch.setattr(
+        "mbu_gui_helper.cli.os.chown",
+        lambda path, uid, gid: owned.append(path),
+    )
+    code = main(
+        ["clean"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda *a, **k: 0,
+    )
+    assert code == 0
+    assert owned == []

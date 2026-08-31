@@ -88,6 +88,23 @@ def test_confirm_path_and_invalid_pset_stay_disabled():
     assert not p.formatButton.isEnabled()
 
 
+def test_luks_live_disk_is_not_a_format_candidate():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_luks_lvm.json").read_text())
+    p = FormatPage(inv)
+    names = [p.diskList.item(i).text().split()[0] for i in range(p.diskList.count())]
+    assert "sda" not in names
+    assert names == ["sdb"]
+
+
+def test_no_root_mount_lists_no_format_candidates():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_no_root.json").read_text())
+    p = FormatPage(inv)
+    assert p.diskList.count() == 0
+    assert not p.emptyDiskLabel.isHidden()
+
+
 def test_empty_candidates_message():
     app()
     inv = load_lsblk((FIXTURES / "lsblk_unnamed.json").read_text())
@@ -247,7 +264,7 @@ def test_format_failure_no_unplug():
     _ready_format(w)
     w.formatPage.formatButton.click()
     w.on_format_finished(1)
-    assert failed_command_message(1) in w.logView.toPlainText()
+    assert failed_command_message(1, "format") in w.logView.toPlainText()
     assert w.unplugBanner.isHidden()
     assert w.stack.currentIndex() == PAGE_HOME
 

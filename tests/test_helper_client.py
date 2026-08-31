@@ -17,3 +17,10 @@ def test_messages():
     assert "pkexec" in explain_helper_failure(127, "", helper_exists=True, pkexec_exists=False).lower()
     assert "cancelled" in explain_helper_failure(126, "Error executing command as another user: Request dismissed", helper_exists=True, pkexec_exists=True).lower()
     assert failed_command_message(1) == "The backup command failed (exit 1)."
+    assert failed_command_message(3, "format") == "The format command failed (exit 3)."
+    assert failed_command_message(2, noun="mount") == "The mount command failed (exit 2)."
+    assert failed_command_message(4, "label") == "The label command failed (exit 4)."
+    assert (
+        explain_helper_failure(1, "", helper_exists=True, pkexec_exists=True, noun="format")
+        == "The format command failed (exit 1)."
+    )

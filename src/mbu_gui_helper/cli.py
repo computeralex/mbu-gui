@@ -4,8 +4,10 @@ from collections.abc import Callable, Mapping
 import argparse
 import json
 import os
+import pwd
 import subprocess
 import sys
+from pathlib import Path
 
 from mbu_gui.disks import parse_lsblk
 from mbu_gui.paths import home_for_helper, resolve_paths
@@ -91,6 +93,36 @@ def _load_inventory(lsblk_data: dict | None, environ: Mapping[str, str]):
     return parse_lsblk(lsblk_data)
 
 
+def _pkexec_ids(environ: Mapping[str, str]) -> tuple[int, int] | None:
+    uid_s = environ.get("PKEXEC_UID")
+    if not uid_s:
+        return None
+    try:
+        uid = int(uid_s)
+    except ValueError:
+        return None
+    try:
+        gid = pwd.getpwuid(uid).pw_gid
+    except (KeyError, TypeError, OverflowError, AttributeError):
+        gid = uid
+    return uid, gid
+
+
+def chown_state_to_pkexec_uid(root: Path, environ: Mapping[str, str]) -> None:
+    ids = _pkexec_ids(environ)
+    if ids is None or not root.exists():
+        return
+    uid, gid = ids
+    paths = [root]
+    if root.is_dir():
+        paths.extend(root.rglob("*"))
+    for path in paths:
+        try:
+            os.chown(path, uid, gid)
+        except OSError:
+            continue
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -106,6 +138,7 @@ def main(
     env = mbu_environ(paths, environ)
     for directory in (paths.log_dir, paths.out_dir, paths.mount_dir):
         directory.mkdir(parents=True, exist_ok=True)
+    chown_state_to_pkexec_uid(paths.state_dir, environ)
     try:
         return _dispatch(
             args,
@@ -118,6 +151,8 @@ def main(
     except ValueError as e:
         print(e)
         return 2
+    finally:
+        chown_state_to_pkexec_uid(paths.state_dir, environ)
 
 
 def _dispatch(args, *, paths, env, lsblk_data, environ, run) -> int:

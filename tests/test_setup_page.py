@@ -4,6 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from pathlib import Path
 from PySide6.QtWidgets import QApplication
 from mbu_gui.disks import load_lsblk
+from mbu_gui.helper_client import failed_command_message
 from mbu_gui.main_window import PAGE_BROWSE, PAGE_FORMAT, PAGE_HOME, PAGE_SETUP, MainWindow
 from mbu_gui.setup_page import SetupPage
 
@@ -66,6 +67,24 @@ def test_invalid_set_name_keeps_apply_disabled():
     p.confirmEdit.setText("main-1")
     p._sync_enabled()
     assert not p.applyButton.isEnabled()
+
+
+def test_apply_disabled_for_live_set_and_backup_set():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    p = SetupPage(inv)
+    p.setNameEdit.setText("main")
+    p.confirmEdit.setText("main")
+    p._sync_enabled()
+    assert not p.applyButton.isEnabled()
+    p.setNameEdit.setText("bak1")
+    p.confirmEdit.setText("bak1")
+    p._sync_enabled()
+    assert not p.applyButton.isEnabled()
+    p.setNameEdit.setText("newset")
+    p.confirmEdit.setText("newset")
+    p._sync_enabled()
+    assert p.applyButton.isEnabled()
 
 
 def test_preview_live_partitions_only():
@@ -187,6 +206,6 @@ def test_apply_failure_stays_visible_without_unplug():
     w.setupPage.applyButton.click()
     w.on_label_live_finished(1)
     assert w.stack.currentIndex() == PAGE_HOME
-    assert "exit 1" in w.logView.toPlainText()
+    assert failed_command_message(1, "label") in w.logView.toPlainText()
     assert w.unplugBanner.isHidden()
     assert w.inventory.unnamed_live is True

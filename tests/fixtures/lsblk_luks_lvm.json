@@ -1,0 +1,125 @@
+{
+  "blockdevices": [
+    {
+      "name": "sda",
+      "path": "/dev/sda",
+      "type": "disk",
+      "size": "256G",
+      "model": "Samsung SSD",
+      "children": [
+        {
+          "name": "sda1",
+          "path": "/dev/sda1",
+          "type": "part",
+          "size": "512M",
+          "fstype": "vfat",
+          "mountpoint": "/boot/efi",
+          "partlabel": "main-efi",
+          "partn": 1,
+          "uuid": "AAAA"
+        },
+        {
+          "name": "sda2",
+          "path": "/dev/sda2",
+          "type": "part",
+          "size": "1G",
+          "fstype": "ext4",
+          "mountpoint": "/boot",
+          "partlabel": "main-boot",
+          "partn": 2,
+          "uuid": "BBBB"
+        },
+        {
+          "name": "sda3",
+          "path": "/dev/sda3",
+          "type": "part",
+          "size": "254G",
+          "fstype": "crypto_LUKS",
+          "mountpoint": null,
+          "partlabel": "main-root",
+          "partn": 3,
+          "uuid": "CCCC",
+          "children": [
+            {
+              "name": "cryptroot",
+              "path": "/dev/mapper/cryptroot",
+              "type": "crypt",
+              "size": "254G",
+              "fstype": "LVM2_member",
+              "mountpoint": null,
+              "partlabel": null,
+              "partn": null,
+              "uuid": "DDDD",
+              "children": [
+                {
+                  "name": "vg-root",
+                  "path": "/dev/mapper/vg-root",
+                  "type": "lvm",
+                  "size": "50G",
+                  "fstype": "ext4",
+                  "mountpoint": "/",
+                  "partlabel": null,
+                  "partn": null,
+                  "uuid": "EEEE"
+                },
+                {
+                  "name": "vg-home",
+                  "path": "/dev/mapper/vg-home",
+                  "type": "lvm",
+                  "size": "196G",
+                  "fstype": "ext4",
+                  "mountpoint": "/home",
+                  "partlabel": null,
+                  "partn": null,
+                  "uuid": "FFFF"
+                },
+                {
+                  "name": "vg-swap",
+                  "path": "/dev/mapper/vg-swap",
+                  "type": "lvm",
+                  "size": "8G",
+                  "fstype": "swap",
+                  "mountpoint": null,
+                  "partlabel": null,
+                  "partn": null,
+                  "uuid": "GGGG"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sdb",
+      "path": "/dev/sdb",
+      "type": "disk",
+      "size": "500G",
+      "model": "Backup Drive",
+      "children": [
+        {
+          "name": "sdb1",
+          "path": "/dev/sdb1",
+          "type": "part",
+          "size": "512M",
+          "fstype": "vfat",
+          "mountpoint": null,
+          "partlabel": "bak1-efi",
+          "partn": 1,
+          "uuid": "HHHH"
+        },
+        {
+          "name": "sdb2",
+          "path": "/dev/sdb2",
+          "type": "part",
+          "size": "50G",
+          "fstype": "ext4",
+          "mountpoint": null,
+          "partlabel": "bak1-root",
+          "partn": 2,
+          "uuid": "IIII"
+        }
+      ]
+    }
+  ]
+}

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
     QDialog,
@@ -38,13 +39,28 @@ PAGE_SETUP = 1
 PAGE_FORMAT = 2
 PAGE_BROWSE = 3
 
+CLOSE_MOUNTED_TEXT = "Unmount the backup before closing."
+
+_HELPER_NOUNS = {
+    "backup": "backup",
+    "format-disk": "format",
+    "mount": "mount",
+    "label-live": "label",
+    "clean": "unmount",
+}
+
+
+def _icon_candidates() -> tuple[Path, ...]:
+    repo = Path(__file__).resolve().parents[2]
+    return (
+        Path("/usr/share/mbu-gui/mbu-icon.png"),
+        repo / "data" / "mbu-icon.png",
+        repo / "vendor" / "mbu" / "mbu-icon.png",
+    )
+
 
 def _icon_path() -> Path | None:
-    root = Path(__file__).resolve().parents[2]
-    for candidate in (
-        root / "vendor" / "mbu" / "mbu-icon.png",
-        root / "data" / "mbu-icon.png",
-    ):
+    for candidate in _icon_candidates():
         if candidate.exists():
             return candidate
     return None
@@ -61,6 +77,7 @@ class MainWindow(QMainWindow):
         start_process: Callable[[list[str]], None] | None = None,
         helper_path: Path | None = None,
         reload_inventory: Callable[[], Inventory] | None = None,
+        reload_last_run: Callable[[], LastRun | None] | None = None,
         ask_copy_now: Callable[[], bool] | None = None,
         open_dir: Callable[[str], None] | None = None,
         parent=None,
@@ -73,6 +90,7 @@ class MainWindow(QMainWindow):
         self.start_process = start_process
         self.helper_path = helper_path
         self.reload_inventory = reload_inventory
+        self.reload_last_run = reload_last_run
         self.ask_copy_now = ask_copy_now
         self.open_dir = open_dir
         self._running = False
@@ -137,13 +155,11 @@ class MainWindow(QMainWindow):
 
         self.currentFileLabel = QLabel("")
         self.currentFileLabel.setObjectName("currentFileLabel")
-        layout.addWidget(self.currentFileLabel)
 
         self.logView = QPlainTextEdit()
         self.logView.setObjectName("logView")
         self.logView.setReadOnly(True)
         self.logView.setMinimumHeight(160)
-        layout.addWidget(self.logView)
 
         self.unplugBanner = QLabel(UNPLUG_BANNER_TEXT)
         self.unplugBanner.setObjectName("unplugBanner")
@@ -155,7 +171,6 @@ class MainWindow(QMainWindow):
             "background-color: #F4D03F; color: #000000; font-weight: bold; padding: 12px;"
         )
         self.unplugBanner.hide()
-        layout.addWidget(self.unplugBanner)
 
         self.setupPage = SetupPage(inventory)
         self.setupPage.setObjectName("setupPage")
@@ -175,8 +190,19 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.formatPage)
         self.stack.addWidget(self.browsePage)
 
-        self.setCentralWidget(self.stack)
+        root = QWidget()
+        root_layout = QVBoxLayout(root)
+        root_layout.addWidget(self.stack, 1)
+        root_layout.addWidget(self.currentFileLabel)
+        root_layout.addWidget(self.logView)
+        root_layout.addWidget(self.unplugBanner)
+        self.setCentralWidget(root)
         self.resize(720, 560)
+
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setInterval(2000)
+        self._refresh_timer.timeout.connect(self._on_home_timer)
+        self._refresh_timer.start()
 
     def _wire_setup_page(self) -> None:
         self.setupPage.applyButton.clicked.connect(self.on_setup_apply)
@@ -250,6 +276,54 @@ class MainWindow(QMainWindow):
         self._replace_format_page(inventory)
         self._replace_browse_page(inventory)
 
+    def _apply_last_run(self, last_run: LastRun | None) -> None:
+        self.last_run = last_run
+        self.lastRunLabel.setText(last_run_label(last_run))
+
+    def refresh(self) -> None:
+        if self._running:
+            return
+        if self.browsePage.mounted:
+            return
+        if self.reload_inventory is not None:
+            try:
+                self._apply_inventory(self.reload_inventory())
+            except Exception as e:
+                self.show_error(str(e))
+        if self.reload_last_run is not None:
+            try:
+                self._apply_last_run(self.reload_last_run())
+            except Exception as e:
+                self.show_error(str(e))
+
+    def _on_home_timer(self) -> None:
+        if self.stack.currentIndex() != PAGE_HOME:
+            return
+        self.refresh()
+
+    def _go_home(self) -> None:
+        self.stack.setCurrentIndex(PAGE_HOME)
+        self.refresh()
+
+    def _explain_failure(self, code: int, stderr: str = "") -> str:
+        return explain_helper_failure(
+            code,
+            stderr,
+            helper_exists=self.helper_exists,
+            pkexec_exists=self.pkexec_exists,
+            noun=_HELPER_NOUNS.get(self._helper_kind, "backup"),
+        )
+
+    def closeEvent(self, event) -> None:
+        if self._running:
+            event.ignore()
+            return
+        if self.browsePage.mounted:
+            self.show_error(CLOSE_MOUNTED_TEXT)
+            event.ignore()
+            return
+        super().closeEvent(event)
+
     def show_unplug(self, visible: bool) -> None:
         self.unplugBanner.setVisible(visible)
 
@@ -302,7 +376,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(PAGE_SETUP)
 
     def on_setup_leave(self) -> None:
-        self.stack.setCurrentIndex(PAGE_HOME)
+        self._go_home()
 
     def on_setup_apply(self) -> None:
         if self._running or not self.setupPage._can_apply():
@@ -315,7 +389,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(PAGE_FORMAT)
 
     def on_format_leave(self) -> None:
-        self.stack.setCurrentIndex(PAGE_HOME)
+        self._go_home()
 
     def on_format_apply(self) -> None:
         if self._running or not self.formatPage._can_format():
@@ -331,7 +405,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(PAGE_BROWSE)
 
     def on_browse_leave(self) -> None:
-        self.stack.setCurrentIndex(PAGE_HOME)
+        self._go_home()
 
     def on_mount_apply(self) -> None:
         if self._running or self.browsePage.mounted:
@@ -354,24 +428,26 @@ class MainWindow(QMainWindow):
             return
         self._run_unmount()
 
+    def _missing_helper_message(self, helper_ok: bool) -> str:
+        return explain_helper_failure(
+            127,
+            "",
+            helper_exists=helper_ok,
+            pkexec_exists=self.pkexec_exists,
+            noun=_HELPER_NOUNS.get(self._helper_kind, "backup"),
+        )
+
     def _run_backup_with_fselection(self, fselection: str) -> None:
         if self._running:
             return
+        self._helper_kind = "backup"
         helper = self.helper_path if self.helper_path is not None else which_helper()
         helper_ok = self.helper_exists and helper is not None
         if helper is None or not helper_ok or not self.pkexec_exists:
-            self.show_error(
-                explain_helper_failure(
-                    127,
-                    "",
-                    helper_exists=helper_ok,
-                    pkexec_exists=self.pkexec_exists,
-                )
-            )
+            self.show_error(self._missing_helper_message(helper_ok))
             return
         argv = pkexec_argv(helper, ["backup", "--fselection", fselection])
         self._helper_output = []
-        self._helper_kind = "backup"
         self.show_unplug(False)
         self.set_running(True)
         if self.start_process is not None:
@@ -386,22 +462,15 @@ class MainWindow(QMainWindow):
     def _run_label_live(self, labels: str) -> None:
         if self._running:
             return
+        self._helper_kind = "label-live"
         helper = self.helper_path if self.helper_path is not None else which_helper()
         helper_ok = self.helper_exists and helper is not None
         if helper is None or not helper_ok or not self.pkexec_exists:
-            self.show_error(
-                explain_helper_failure(
-                    127,
-                    "",
-                    helper_exists=helper_ok,
-                    pkexec_exists=self.pkexec_exists,
-                )
-            )
-            self.stack.setCurrentIndex(PAGE_HOME)
+            self.show_error(self._missing_helper_message(helper_ok))
+            self._go_home()
             return
         argv = pkexec_argv(helper, ["label-live", "--labels", labels])
         self._helper_output = []
-        self._helper_kind = "label-live"
         self.set_running(True)
         if self.start_process is not None:
             self.start_process(argv)
@@ -415,22 +484,15 @@ class MainWindow(QMainWindow):
     def _run_format_disk(self, disk: str, pset: str) -> None:
         if self._running:
             return
+        self._helper_kind = "format-disk"
         helper = self.helper_path if self.helper_path is not None else which_helper()
         helper_ok = self.helper_exists and helper is not None
         if helper is None or not helper_ok or not self.pkexec_exists:
-            self.show_error(
-                explain_helper_failure(
-                    127,
-                    "",
-                    helper_exists=helper_ok,
-                    pkexec_exists=self.pkexec_exists,
-                )
-            )
-            self.stack.setCurrentIndex(PAGE_HOME)
+            self.show_error(self._missing_helper_message(helper_ok))
+            self._go_home()
             return
         argv = pkexec_argv(helper, ["format-disk", "--disk", disk, "--pset", pset])
         self._helper_output = []
-        self._helper_kind = "format-disk"
         self.show_unplug(False)
         self.set_running(True)
         if self.start_process is not None:
@@ -445,22 +507,15 @@ class MainWindow(QMainWindow):
     def _run_mount(self, set_name: str) -> None:
         if self._running:
             return
+        self._helper_kind = "mount"
         helper = self.helper_path if self.helper_path is not None else which_helper()
         helper_ok = self.helper_exists and helper is not None
         if helper is None or not helper_ok or not self.pkexec_exists:
-            self.show_error(
-                explain_helper_failure(
-                    127,
-                    "",
-                    helper_exists=helper_ok,
-                    pkexec_exists=self.pkexec_exists,
-                )
-            )
-            self.stack.setCurrentIndex(PAGE_HOME)
+            self.show_error(self._missing_helper_message(helper_ok))
+            self._go_home()
             return
         argv = pkexec_argv(helper, ["mount", "--set", set_name])
         self._helper_output = []
-        self._helper_kind = "mount"
         self.show_unplug(False)
         self.set_running(True)
         if self.start_process is not None:
@@ -475,22 +530,15 @@ class MainWindow(QMainWindow):
     def _run_unmount(self) -> None:
         if self._running:
             return
+        self._helper_kind = "clean"
         helper = self.helper_path if self.helper_path is not None else which_helper()
         helper_ok = self.helper_exists and helper is not None
         if helper is None or not helper_ok or not self.pkexec_exists:
-            self.show_error(
-                explain_helper_failure(
-                    127,
-                    "",
-                    helper_exists=helper_ok,
-                    pkexec_exists=self.pkexec_exists,
-                )
-            )
-            self.stack.setCurrentIndex(PAGE_HOME)
+            self.show_error(self._missing_helper_message(helper_ok))
+            self._go_home()
             return
         argv = pkexec_argv(helper, ["clean"])
         self._helper_output = []
-        self._helper_kind = "clean"
         self.show_unplug(False)
         self.set_running(True)
         if self.start_process is not None:
@@ -523,59 +571,27 @@ class MainWindow(QMainWindow):
         if code == 0:
             self.show_unplug(True)
             self.set_running(False)
+            self.refresh()
             return
-        self.show_error(
-            explain_helper_failure(
-                code,
-                stderr,
-                helper_exists=self.helper_exists,
-                pkexec_exists=self.pkexec_exists,
-            )
-        )
+        self.show_error(self._explain_failure(code, stderr))
         self.show_unplug(False)
         self.set_running(False)
 
     def on_label_live_finished(self, code: int, stderr: str = "") -> None:
-        if code == 0:
-            if self.reload_inventory is not None:
-                try:
-                    self._apply_inventory(self.reload_inventory())
-                except Exception as e:
-                    self.show_error(str(e))
-            self.stack.setCurrentIndex(PAGE_HOME)
-            self.set_running(False)
-            return
-        self.show_error(
-            explain_helper_failure(
-                code,
-                stderr,
-                helper_exists=self.helper_exists,
-                pkexec_exists=self.pkexec_exists,
-            )
-        )
-        self.stack.setCurrentIndex(PAGE_HOME)
+        if code != 0:
+            self.show_error(self._explain_failure(code, stderr))
         self.set_running(False)
+        self._go_home()
 
     def on_format_finished(self, code: int, stderr: str = "") -> None:
         if code != 0:
-            self.show_error(
-                explain_helper_failure(
-                    code,
-                    stderr,
-                    helper_exists=self.helper_exists,
-                    pkexec_exists=self.pkexec_exists,
-                )
-            )
+            self.show_error(self._explain_failure(code, stderr))
             self.show_unplug(False)
-            self.stack.setCurrentIndex(PAGE_HOME)
             self.set_running(False)
+            self._go_home()
             return
         self.set_running(False)
-        if self.reload_inventory is not None:
-            try:
-                self._apply_inventory(self.reload_inventory())
-            except Exception as e:
-                self.show_error(str(e))
+        self.refresh()
         if self._ask_copy_now():
             self.stack.setCurrentIndex(PAGE_HOME)
             self._run_backup_with_fselection(
@@ -591,12 +607,7 @@ class MainWindow(QMainWindow):
             self.browsePage.busyLabel.setText("")
             self.set_running(False)
             return
-        message = explain_helper_failure(
-            code,
-            stderr,
-            helper_exists=self.helper_exists,
-            pkexec_exists=self.pkexec_exists,
-        )
+        message = self._explain_failure(code, stderr)
         self.browsePage.busyLabel.setText(message)
         self.show_error(message)
         self.browsePage.set_mounted(False)
@@ -613,7 +624,7 @@ class MainWindow(QMainWindow):
         self.browsePage.set_mounted(False)
         self.set_running(False)
         self.show_unplug(True)
-        self.stack.setCurrentIndex(PAGE_HOME)
+        self._go_home()
 
     def _ask_copy_now(self) -> bool:
         if self.ask_copy_now is not None:

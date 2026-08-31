@@ -101,7 +101,13 @@ class SetupPage(QWidget):
 
     def _can_apply(self) -> bool:
         name = self.setNameEdit.text()
-        return is_valid_set_name(name) and self.confirmEdit.text() == name
+        if not is_valid_set_name(name):
+            return False
+        if name == self.inventory.live_set:
+            return False
+        if name in self.inventory.backup_sets:
+            return False
+        return self.confirmEdit.text() == name
 
     def _sync_enabled(self) -> None:
         self.applyButton.setEnabled(self._can_apply())

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from mbu_gui.disks import load_lsblk
+from mbu_gui.disks import Inventory, load_lsblk
 from mbu_gui.paths import resolve_paths
 from mbu_gui_helper.commands import (
     format_disk_argv,
@@ -37,6 +37,23 @@ def test_refuse_format_live_disk():
     except ValueError as e:
         assert str(e) == live_disk_error
     assert_not_live_disk("sdb", inv)  # does not raise
+
+
+def test_refuse_format_when_live_disk_unknown():
+    inv = Inventory.empty("could not find /")
+    for name in ("sda", "sdb", "/dev/nvme0n1"):
+        try:
+            assert_not_live_disk(name, inv)
+            assert False, "expected ValueError"
+        except ValueError as e:
+            assert str(e) == live_disk_error
+    no_root = load_lsblk((FIXTURES / "lsblk_no_root.json").read_text())
+    assert no_root.live_disk is None
+    try:
+        assert_not_live_disk("sdb", no_root)
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert str(e) == live_disk_error
 
 
 def test_refuse_label_on_backup_disk():

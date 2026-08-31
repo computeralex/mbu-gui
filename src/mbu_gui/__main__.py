@@ -5,12 +5,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from mbu_gui.app import create_app
-from mbu_gui.desktop_icon import maybe_install_desktop_icon
 from mbu_gui.disks import Inventory, load_lsblk
 from mbu_gui.helper_client import which_helper
-from mbu_gui.logs import parse_master_log
-from mbu_gui.main_window import MainWindow
+from mbu_gui.logs import LastRun, parse_master_log
 from mbu_gui.paths import resolve_paths
 
 _INSTALLED_DESKTOP = Path("/usr/share/applications/mbu-gui.desktop")
@@ -27,22 +24,36 @@ def load_inventory() -> Inventory:
     return load_lsblk(out)
 
 
-def main() -> int:
-    app = create_app(sys.argv)
+def load_last_run() -> LastRun | None:
     paths = resolve_paths()
+    if not paths.master_log.exists():
+        return None
+    return parse_master_log(paths.master_log.read_text(errors="replace"))
+
+
+def main() -> int:
+    try:
+        from mbu_gui.app import create_app
+        from mbu_gui.desktop_icon import maybe_install_desktop_icon
+        from mbu_gui.main_window import MainWindow
+    except ImportError as e:
+        from mbu_gui.missing_pyside import handle_import_error
+
+        return handle_import_error(e)
+
+    app = create_app(sys.argv)
     err = None
     try:
         inv = load_inventory()
     except Exception as e:
         inv = Inventory.empty(str(e))
         err = str(e)
-    last = None
-    if paths.master_log.exists():
-        last = parse_master_log(paths.master_log.read_text(errors="replace"))
+    last = load_last_run()
     w = MainWindow(
         inventory=inv,
         last_run=last,
         reload_inventory=load_inventory,
+        reload_last_run=load_last_run,
         helper_exists=bool(which_helper()),
         pkexec_exists=bool(shutil.which("pkexec")),
     )

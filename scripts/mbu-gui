@@ -1,5 +1,13 @@
 #!/usr/bin/python3
 import sys
 sys.path.insert(0, "/usr/lib/mbu-gui")
-from mbu_gui.__main__ import main
+try:
+    from mbu_gui.__main__ import main
+except ImportError as e:
+    try:
+        from mbu_gui.missing_pyside import handle_import_error
+    except ImportError:
+        print("MBU Backup could not start:", e, file=sys.stderr)
+        raise SystemExit(1) from e
+    raise SystemExit(handle_import_error(e))
 raise SystemExit(main())

@@ -13,7 +13,7 @@ def normalize_disk(name: str) -> str:
 
 
 def assert_not_live_disk(disk: str, inventory: Inventory) -> None:
-    if normalize_disk(disk) == inventory.live_disk:
+    if inventory.live_disk is None or normalize_disk(disk) == inventory.live_disk:
         raise ValueError(live_disk_error)
 
 
