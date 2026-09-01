@@ -1,16 +1,25 @@
 # tests/test_paths.py
 from pathlib import Path
-from types import SimpleNamespace
 
-from mbu_gui.paths import home_for_helper, resolve_paths
+import mbu_gui.paths
+from mbu_gui.paths import STATE_DIR, resolve_paths
 
 
-def test_resolve_paths_uses_explicit_home_and_mbu_dir(tmp_path):
+def test_state_dir_is_root_owned_and_not_under_a_home():
+    # STATE_DIR here is the import-time constant; conftest patches the module
+    # attribute that resolve_paths reads, so assert on both.
+    assert STATE_DIR == Path("/var/lib/mbu-gui")
+    assert ".local" not in str(STATE_DIR)
+    p = resolve_paths(environ={})
+    assert p.state_dir == mbu_gui.paths.STATE_DIR
+
+
+def test_resolve_paths_uses_explicit_state_dir_and_mbu_dir(tmp_path):
     mbu = tmp_path / "mbu"
-    home = tmp_path / "home"
-    p = resolve_paths(home=home, mbu_dir=mbu)
+    state = tmp_path / "state"
+    p = resolve_paths(state_dir=state, mbu_dir=mbu)
     assert p.mbu_dir == mbu
-    assert p.state_dir == home / ".local/share/mbu-gui"
+    assert p.state_dir == state
     assert p.log_dir == p.state_dir / "log"
     assert p.out_dir == p.state_dir / "out"
     assert p.mount_dir == p.state_dir / "mount"
@@ -21,19 +30,12 @@ def test_resolve_paths_uses_explicit_home_and_mbu_dir(tmp_path):
 
 def test_resolve_paths_honors_env_mbu_dir(tmp_path):
     mbu = tmp_path / "bundled"
-    p = resolve_paths(home=tmp_path, environ={"MBU_GUI_MBU_DIR": str(mbu)})
+    p = resolve_paths(environ={"MBU_GUI_MBU_DIR": str(mbu)})
     assert p.mbu_dir == mbu
 
 
-def test_home_for_helper_uses_pkexec_uid():
-    def getpwuid(uid):
-        assert uid == 1000
-        return SimpleNamespace(pw_dir="/home/axel")
-
-    home = home_for_helper(environ={"PKEXEC_UID": "1000"}, getpwuid=getpwuid)
-    assert home == Path("/home/axel")
-
-
-def test_home_for_helper_falls_back_to_home_env(tmp_path):
-    home = home_for_helper(environ={"HOME": str(tmp_path)}, getpwuid=lambda uid: (_ for _ in ()).throw(KeyError(uid)))
-    assert home == tmp_path
+def test_state_dir_ignores_home_environment(tmp_path):
+    """HOME and PKEXEC_UID must not be able to move root's state directory."""
+    p = resolve_paths(environ={"HOME": "/home/attacker", "PKEXEC_UID": "1000"})
+    assert p.state_dir == mbu_gui.paths.STATE_DIR
+    assert "/home/attacker" not in str(p.state_dir)

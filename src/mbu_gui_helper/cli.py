@@ -4,13 +4,12 @@ from collections.abc import Callable, Mapping
 import argparse
 import json
 import os
-import pwd
 import subprocess
 import sys
 from pathlib import Path
 
 from mbu_gui.disks import parse_lsblk
-from mbu_gui.paths import MbuPaths, home_for_helper, resolve_paths
+from mbu_gui.paths import MbuPaths, resolve_paths
 from mbu_gui_helper.commands import (
     format_disk_argv,
     format_table_argv,
@@ -33,6 +32,8 @@ LSBLK_ARGV = [
     "-o",
     "NAME,PATH,TYPE,SIZE,FSTYPE,MOUNTPOINT,PARTLABEL,PARTN,UUID,MODEL,SERIAL,WWN,PTUUID",
 ]
+
+state_symlink_error = "Refusing to use a state path that is not a plain root-owned directory"
 
 
 class ArgumentParser(argparse.ArgumentParser):
@@ -98,58 +99,36 @@ def _load_inventory(lsblk_data: dict | None, environ: Mapping[str, str]):
     return parse_lsblk(lsblk_data)
 
 
-def _pkexec_ids(environ: Mapping[str, str]) -> tuple[int, int] | None:
-    uid_s = environ.get("PKEXEC_UID")
-    if not uid_s:
-        return None
-    try:
-        uid = int(uid_s)
-    except ValueError:
-        return None
-    try:
-        gid = pwd.getpwuid(uid).pw_gid
-    except (KeyError, TypeError, OverflowError, AttributeError):
-        gid = uid
-    return uid, gid
+def _make_state_dir(path: Path, *, parents: bool) -> None:
+    """Create one state directory, refusing to write through a symlink.
 
-
-def _chown(path: Path, uid: int, gid: int) -> None:
-    try:
-        os.chown(path, uid, gid, follow_symlinks=False)
-    except (OSError, TypeError):
-        # Python <3.13 os.chown may not take follow_symlinks on all platforms.
-        try:
-            os.chown(path, uid, gid)
-        except OSError:
-            return
-
-
-def chown_state_to_pkexec_uid(paths: MbuPaths, environ: Mapping[str, str]) -> None:
-    """Chown helper state dirs so the GUI user can read logs.
-
-    Never recurse into mount_dir: that directory holds mounted backup
-    filesystems (and possibly a symlink to /).
+    Running as root, a symlinked component would let the caller aim MBU's log
+    and format-table writes at any path on the system.
     """
-    ids = _pkexec_ids(environ)
-    if ids is None:
-        return
-    uid, gid = ids
-    targets = [
-        paths.state_dir,
-        paths.log_dir,
-        paths.out_dir,
-        paths.mount_dir,
-    ]
-    for directory in (paths.log_dir, paths.out_dir):
-        if directory.is_dir():
-            for child in directory.iterdir():
-                if child.is_symlink():
-                    continue
-                if child.is_file():
-                    targets.append(child)
-    for path in targets:
-        if path.exists() or path.is_symlink():
-            _chown(path, uid, gid)
+    if path.is_symlink():
+        raise ValueError(f"{state_symlink_error}: {path}")
+    path.mkdir(mode=0o755, parents=parents, exist_ok=True)
+    if path.is_symlink() or not path.is_dir():
+        raise ValueError(f"{state_symlink_error}: {path}")
+
+
+def prepare_state_dirs(paths: MbuPaths) -> None:
+    _make_state_dir(paths.state_dir, parents=True)
+    for directory in (paths.log_dir, paths.out_dir, paths.mount_dir):
+        _make_state_dir(directory, parents=False)
+
+
+def format_table_path(paths: MbuPaths) -> Path:
+    """Path MBU writes the generated format table to, cleared before each use.
+
+    Root both writes and then reads this file, so we start from a known state
+    instead of trusting whatever is already sitting there.
+    """
+    table = paths.out_dir / "mbuformat.table"
+    if table.is_symlink() or (table.exists() and not table.is_file()):
+        raise ValueError(f"{state_symlink_error}: {table}")
+    table.unlink(missing_ok=True)
+    return table
 
 
 def main(
@@ -158,17 +137,18 @@ def main(
     environ: Mapping[str, str] | None = None,
     lsblk_data: dict | None = None,
     run: Callable | None = None,
+    state_dir: Path | None = None,
 ) -> int:
     environ = os.environ if environ is None else environ
-    home = home_for_helper(environ=environ)
-    paths = resolve_paths(home=home, environ=environ)
+    paths = resolve_paths(state_dir=state_dir, environ=environ)
     args = _build_parser().parse_args(argv)
     run = run_streamed if run is None else run
     env = mbu_environ(paths, environ)
-    for directory in (paths.log_dir, paths.out_dir, paths.mount_dir):
-        directory.mkdir(parents=True, exist_ok=True)
-    chown_state_to_pkexec_uid(paths, environ)
+    # Logs and mount points live under root-owned state; keep them readable so
+    # the unprivileged GUI can show progress without any chown into $HOME.
+    os.umask(0o022)
     try:
+        prepare_state_dirs(paths)
         return _dispatch(
             args,
             paths=paths,
@@ -180,8 +160,6 @@ def main(
     except ValueError as e:
         print(e)
         return 2
-    finally:
-        chown_state_to_pkexec_uid(paths, environ)
 
 
 def _dispatch(args, *, paths, env, lsblk_data, environ, run) -> int:
@@ -211,11 +189,11 @@ def _dispatch(args, *, paths, env, lsblk_data, environ, run) -> int:
     if args.command == "format-disk":
         target = resolve_format_target(args.disk_id, args.disk, inventory)
         assert_not_live_disk(target, inventory)
+        tablefile = format_table_path(paths)
         table_code = invoke(format_table_argv())
         format_code = 0
         if table_code == 0:
-            tablefile = str(paths.out_dir / "mbuformat.table")
-            format_code = invoke(format_disk_argv(target, args.pset, tablefile))
+            format_code = invoke(format_disk_argv(target, args.pset, str(tablefile)))
         primary = table_code if table_code != 0 else format_code
         return then_clean(primary)
 

@@ -22,6 +22,12 @@ def test_readme_pip_uses_break_system_packages():
     assert "externally managed" in text.lower()
 
 
+def test_package_ships_root_owned_state_dir():
+    text = Path("packaging/Makefile").read_text()
+    assert "$(DEST)/var/lib/mbu-gui" in text
+    assert "--root-owner-group" in text
+
+
 def test_launcher_catches_pyside_import_error():
     text = Path("scripts/mbu-gui").read_text()
     assert "ImportError" in text

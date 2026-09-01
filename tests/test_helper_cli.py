@@ -18,6 +18,10 @@ def _env(tmp_path):
     }
 
 
+def _state(tmp_path):
+    return tmp_path / "var-lib-mbu-gui"
+
+
 def _lsblk(name="lsblk_named.json"):
     return json.loads((FIXTURES / name).read_text())
 
@@ -190,62 +194,118 @@ def test_label_live_sfdisk_argv(tmp_path):
     assert captured[0] == ["sfdisk", "--part-label", "/dev/sda", "2", "main-root"]
 
 
-def test_chown_state_dirs_to_pkexec_uid(tmp_path, monkeypatch):
-    home = tmp_path / "axel"
-    owned = []
-
-    def getpwuid(uid):
-        assert uid == 1000
-        return SimpleNamespace(pw_dir=str(home), pw_gid=1000)
-
-    def fake_chown(path, uid, gid, follow_symlinks=True):
-        owned.append((str(path), uid, gid, follow_symlinks))
-
-    monkeypatch.setattr("mbu_gui.paths.pwd.getpwuid", getpwuid)
-    monkeypatch.setattr("mbu_gui_helper.cli.pwd.getpwuid", getpwuid)
-    monkeypatch.setattr("mbu_gui_helper.cli.os.chown", fake_chown)
-    env = _env(tmp_path)
-    env["PKEXEC_UID"] = "1000"
-    state = home / ".local/share/mbu-gui"
-    (state / "log").mkdir(parents=True)
-    (state / "out").mkdir(parents=True)
-    mount = state / "mount"
-    mount.mkdir(parents=True)
-    trapped = mount / "bak1-root"
-    trapped.mkdir()
-    (trapped / "passwd").write_text("should not be chowned")
-    (state / "log" / "mbu.log").write_text("ok")
-    (state / "out" / "table").write_text("t")
-    code = main(
-        ["clean"],
-        environ=env,
-        lsblk_data=_lsblk(),
-        run=lambda *a, **k: 0,
-    )
-    assert code == 0
-    chowned = {Path(p) for p, uid, gid, _ in owned}
-    assert state in chowned
-    assert state / "log" in chowned
-    assert state / "out" in chowned
-    assert state / "mount" in chowned
-    assert state / "log" / "mbu.log" in chowned
-    assert state / "out" / "table" in chowned
-    assert trapped not in chowned
-    assert trapped / "passwd" not in chowned
-    assert all(uid == 1000 and gid == 1000 and follow is False for _, uid, gid, follow in owned)
-
-
-def test_no_chown_without_pkexec_uid(tmp_path, monkeypatch):
-    owned = []
-    monkeypatch.setattr(
-        "mbu_gui_helper.cli.os.chown",
-        lambda path, uid, gid: owned.append(path),
-    )
+def test_state_dirs_are_created_under_root_owned_state(tmp_path):
+    state = _state(tmp_path)
     code = main(
         ["clean"],
         environ=_env(tmp_path),
         lsblk_data=_lsblk(),
         run=lambda *a, **k: 0,
+        state_dir=state,
     )
     assert code == 0
-    assert owned == []
+    for sub in ("log", "out", "mount"):
+        assert (state / sub).is_dir()
+    # nothing was created in the calling user's home
+    assert not (tmp_path / "home" / ".local").exists()
+
+
+def test_state_dir_ignores_home_env(tmp_path):
+    """PKEXEC_UID/HOME must not steer root's writes into a user's home."""
+    env = _env(tmp_path)
+    env["PKEXEC_UID"] = "1000"
+    state = _state(tmp_path)
+    code = main(
+        ["clean"],
+        environ=env,
+        lsblk_data=_lsblk(),
+        run=lambda *a, **k: 0,
+        state_dir=state,
+    )
+    assert code == 0
+    assert (state / "log").is_dir()
+    assert not (tmp_path / "home" / ".local").exists()
+
+
+def test_refuses_symlinked_state_subdirectory(tmp_path, capsys):
+    """A symlinked log dir would aim root's MBU log writes anywhere."""
+    state = _state(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    state.mkdir(parents=True)
+    (state / "log").symlink_to(elsewhere, target_is_directory=True)
+    calls = []
+    code = main(
+        ["clean"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda argv, **k: calls.append(list(argv)) or 0,
+        state_dir=state,
+    )
+    assert code == 2
+    assert "Refusing to use a state path" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_refuses_symlinked_state_root(tmp_path, capsys):
+    state = _state(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.symlink_to(elsewhere, target_is_directory=True)
+    code = main(
+        ["clean"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda *a, **k: 0,
+        state_dir=state,
+    )
+    assert code == 2
+    assert "Refusing to use a state path" in capsys.readouterr().out
+
+
+def test_format_table_is_cleared_before_use_and_lives_outside_home(tmp_path):
+    state = _state(tmp_path)
+    table = state / "out" / "mbuformat.table"
+    table.parent.mkdir(parents=True)
+    table.write_text("planted layout that root must not reuse\n")
+    seen = {}
+
+    def run(argv, **kwargs):
+        if "mbuFormatTableWrite" in argv:
+            seen["table_at_generate"] = table.exists()
+        if "mbuFormatDisk" in argv:
+            seen["tablefile_arg"] = [a for a in argv if a.startswith("tablefile=")]
+        return 0
+
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", SDB_ID, "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=run,
+        state_dir=state,
+    )
+    assert code == 0
+    assert seen["table_at_generate"] is False
+    assert seen["tablefile_arg"] == [f"tablefile={table}"]
+    assert ".local" not in str(table)
+
+
+def test_refuses_symlinked_format_table(tmp_path, capsys):
+    state = _state(tmp_path)
+    (state / "out").mkdir(parents=True)
+    target = tmp_path / "victim.conf"
+    target.write_text("important\n")
+    (state / "out" / "mbuformat.table").symlink_to(target)
+    calls = []
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", SDB_ID, "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda argv, **k: calls.append(list(argv)) or 0,
+        state_dir=state,
+    )
+    assert code == 2
+    assert "Refusing to use a state path" in capsys.readouterr().out
+    assert calls == []
+    assert target.read_text() == "important\n"

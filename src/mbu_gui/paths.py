@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 import os
-import pwd
-from typing import Any
 
 
 INSTALLED_MBU = Path("/usr/share/mbu-gui/mbu")
+
+# Root writes MBU's logs, generated format tables and mount points here.
+# It must NOT be under any user's home: the helper runs as root, and a
+# user-writable path lets the caller redirect root's writes through a symlink
+# or swap a format table out from under root between generating and using it.
+STATE_DIR = Path("/var/lib/mbu-gui")
 
 
 @dataclass(frozen=True)
@@ -34,14 +38,13 @@ def _default_mbu_dir(environ: Mapping[str, str]) -> Path:
 
 def resolve_paths(
     *,
-    home: Path | None = None,
+    state_dir: Path | None = None,
     mbu_dir: Path | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> MbuPaths:
     environ = os.environ if environ is None else environ
-    home = Path.home() if home is None else home
     mbu_dir = _default_mbu_dir(environ) if mbu_dir is None else mbu_dir
-    state_dir = home / ".local/share/mbu-gui"
+    state_dir = STATE_DIR if state_dir is None else state_dir
     log_dir = state_dir / "log"
     out_dir = state_dir / "out"
     mount_dir = state_dir / "mount"
@@ -55,17 +58,3 @@ def resolve_paths(
         backup_latest_log=log_dir / "mbup-latest.log",
         format_latest_log=log_dir / "mbuformat-latest.log",
     )
-
-
-def home_for_helper(
-    *,
-    environ: Mapping[str, str],
-    getpwuid: Callable[[int], Any] | None = None,
-) -> Path:
-    getpwuid = pwd.getpwuid if getpwuid is None else getpwuid
-    uid_s = environ.get("PKEXEC_UID")
-    if uid_s:
-        return Path(getpwuid(int(uid_s)).pw_dir)
-    if environ.get("HOME"):
-        return Path(environ["HOME"])
-    return Path.home()

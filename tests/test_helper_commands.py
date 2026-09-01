@@ -135,7 +135,7 @@ def test_mbup_argv():
 
 
 def test_mbu_environ(tmp_path):
-    paths = resolve_paths(home=tmp_path, mbu_dir=tmp_path / "mbu")
+    paths = resolve_paths(state_dir=tmp_path / "state", mbu_dir=tmp_path / "mbu")
     env = mbu_environ(paths, {"PATH": "/usr/bin", "HOME": "/root"})
     assert env["mbuDir"] == str(paths.mbu_dir)
     assert env["mbuLogDir"] == str(paths.log_dir)
