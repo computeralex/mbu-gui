@@ -28,7 +28,6 @@ NO_DISK_ID_TEXT = (
     "another disk after a replug. Refusing to format it."
 )
 CONFIRM_PROMPT = "Type the confirmation code for the disk you selected"
-_DISK_ID_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 def _disk_item_text(disk: Disk) -> str:
@@ -102,7 +101,6 @@ class FormatPage(QWidget):
         for disk in disks:
             item = QListWidgetItem(_disk_item_text(disk))
             item.setData(Qt.ItemDataRole.UserRole, disk.name)
-            item.setData(_DISK_ID_ROLE, disk.disk_id)
             self.diskList.addItem(item)
         empty = not disks
         self.emptyDiskLabel.setVisible(empty)

@@ -104,6 +104,7 @@ class MainWindow(QMainWindow):
         self._helper_output: list[str] = []
         self._helper_kind = "backup"
         self._line_process: LineProcess | None = None
+        self._backup_unfinished = backup_unfinished
 
         self.setWindowTitle("MBU Backup")
         icon = _icon_path()
@@ -337,6 +338,18 @@ class MainWindow(QMainWindow):
         self.unplugBanner.setText(text)
         self.unplugBanner.setVisible(visible)
 
+    def _clear_unplug(self) -> None:
+        """Hide the banner unless a backup may have left UUIDs cloned.
+
+        Format, mount and unmount do not clone UUIDs, so they hide the banner
+        when they fail. They must not erase a still-standing warning from a
+        backup that never finished.
+        """
+        if self._backup_unfinished:
+            self.show_unplug(True, text=UNPLUG_UNFINISHED_TEXT)
+            return
+        self.show_unplug(False)
+
     def append_log(self, line: str) -> None:
         self.logView.appendPlainText(line)
         current = current_file_from_line(line)
@@ -510,7 +523,7 @@ class MainWindow(QMainWindow):
             ["format-disk", "--disk", disk, "--disk-id", disk_id, "--pset", pset],
         )
         self._helper_output = []
-        self.show_unplug(False)
+        self._clear_unplug()
         self.set_running(True)
         if self.start_process is not None:
             self.start_process(argv)
@@ -533,7 +546,7 @@ class MainWindow(QMainWindow):
             return
         argv = pkexec_argv(helper, ["mount", "--set", set_name])
         self._helper_output = []
-        self.show_unplug(False)
+        self._clear_unplug()
         self.set_running(True)
         if self.start_process is not None:
             self.start_process(argv)
@@ -556,7 +569,7 @@ class MainWindow(QMainWindow):
             return
         argv = pkexec_argv(helper, ["clean"])
         self._helper_output = []
-        self.show_unplug(False)
+        self._clear_unplug()
         self.set_running(True)
         if self.start_process is not None:
             self.start_process(argv)
@@ -586,6 +599,7 @@ class MainWindow(QMainWindow):
 
     def on_helper_finished(self, code: int, stderr: str = "") -> None:
         if code == 0:
+            self._backup_unfinished = False
             self.show_unplug(True)
             self.set_running(False)
             self.refresh()
@@ -593,6 +607,7 @@ class MainWindow(QMainWindow):
         self.show_error(self._explain_failure(code, stderr))
         # A backup that got as far as running may already have cloned UUIDs, so
         # the disk still has to come out even though the run failed.
+        self._backup_unfinished = True
         self.show_unplug(True, text=UNPLUG_UNFINISHED_TEXT)
         self.set_running(False)
 
@@ -605,7 +620,7 @@ class MainWindow(QMainWindow):
     def on_format_finished(self, code: int, stderr: str = "") -> None:
         if code != 0:
             self.show_error(self._explain_failure(code, stderr))
-            self.show_unplug(False)
+            self._clear_unplug()
             self.set_running(False)
             self._go_home()
             return
@@ -630,13 +645,13 @@ class MainWindow(QMainWindow):
         self.browsePage.busyLabel.setText(message)
         self.show_error(message)
         self.browsePage.set_mounted(False)
-        self.show_unplug(False)
+        self._clear_unplug()
         self.set_running(False)
 
     def on_unmount_finished(self, code: int) -> None:
         if code != 0:
             self.browsePage.busyLabel.setText(UNMOUNT_FAIL_TEXT)
-            self.show_unplug(False)
+            self._clear_unplug()
             self.set_running(False)
             return
         self.browsePage.busyLabel.setText("")

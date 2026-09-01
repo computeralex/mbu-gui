@@ -138,6 +138,24 @@ def test_crashed_backup_warns_on_next_launch():
     assert "did not finish" in w.unplugBanner.text()
 
 
+def test_unfinished_warning_survives_a_later_failed_format():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = MainWindow(inventory=inv, last_run=None, backup_unfinished=True)
+    w.on_format_finished(1)
+    assert not w.unplugBanner.isHidden()
+    assert "did not finish" in w.unplugBanner.text()
+
+
+def test_unfinished_warning_clears_after_a_good_backup():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = MainWindow(inventory=inv, last_run=None, backup_unfinished=True)
+    w.on_helper_finished(0)
+    w.on_format_finished(1)
+    assert w.unplugBanner.isHidden()
+
+
 def test_clean_launch_shows_no_banner():
     app()
     inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
