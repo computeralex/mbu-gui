@@ -149,6 +149,41 @@ def candidate_backup_disks(inventory: Inventory) -> list[Disk]:
     return [disk for disk in inventory.disks if disk.name not in excluded]
 
 
+def destination_disks(inventory: Inventory, set_name: str) -> list[Disk]:
+    found: list[Disk] = []
+    for disk in inventory.disks:
+        for part in disk.partitions:
+            parsed = split_mbu_label(part.partlabel)
+            if parsed is not None and parsed[0] == set_name:
+                found.append(disk)
+                break
+    return found
+
+
+def describe_disk(disk: Disk) -> str:
+    bits = [disk.name, disk.size, disk.model or "", disk.disk_id or "no serial reported"]
+    return "  ".join(b for b in bits if b)
+
+
+def describe_backup_route(inventory: Inventory) -> str | None:
+    """Which disk a backup would overwrite, for the confirmation dialog.
+
+    Returns None when that cannot be stated unambiguously, so the caller can
+    refuse to start rather than let the user confirm an unnamed destination.
+    """
+    if inventory.live_set is None or len(inventory.backup_sets) != 1:
+        return None
+    set_name = inventory.backup_sets[0]
+    disks = destination_disks(inventory, set_name)
+    if not disks:
+        return None
+    targets = "\n".join(f"    {describe_disk(disk)}" for disk in disks)
+    return (
+        f"From this computer (set `{inventory.live_set}`)\n"
+        f"Onto backup set `{set_name}`, overwriting:\n{targets}"
+    )
+
+
 def disks_with_id(inventory: Inventory, disk_id: str) -> list[Disk]:
     wanted = disk_id.strip().lower()
     if not wanted:

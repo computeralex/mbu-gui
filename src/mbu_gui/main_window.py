@@ -18,9 +18,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mbu_gui.backup_dialog import BackupDialog
+from mbu_gui.backup_dialog import UNKNOWN_DESTINATION_TEXT, BackupDialog
 from mbu_gui.browse_page import BrowsePage, UNMOUNT_FAIL_TEXT
-from mbu_gui.disks import Inventory
+from mbu_gui.disks import Inventory, describe_backup_route
 from mbu_gui.format_page import FormatPage
 from mbu_gui.helper_client import explain_helper_failure, pkexec_argv, which_helper
 from mbu_gui.logs import LastRun, current_file_from_line, last_run_label
@@ -368,6 +368,9 @@ class MainWindow(QMainWindow):
         dialog = BackupDialog(self.inventory, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+        if dialog.route is None:
+            self.show_error(UNKNOWN_DESTINATION_TEXT)
+            return
         self._run_backup_with_fselection(dialog.fselection())
 
     def on_setup_clicked(self) -> None:
@@ -596,7 +599,7 @@ class MainWindow(QMainWindow):
             return
         self.set_running(False)
         self.refresh()
-        if self._ask_copy_now():
+        if describe_backup_route(self.inventory) is not None and self._ask_copy_now():
             self.stack.setCurrentIndex(PAGE_HOME)
             self._run_backup_with_fselection(
                 "-bootfix," + ",".join(self.inventory.live_functions)
@@ -633,9 +636,13 @@ class MainWindow(QMainWindow):
     def _ask_copy_now(self) -> bool:
         if self.ask_copy_now is not None:
             return self.ask_copy_now()
+        route = describe_backup_route(self.inventory)
         box = QMessageBox(self)
         box.setWindowTitle("Backup disk ready")
-        box.setText("Copy everything from this computer onto the new backup disk?")
+        box.setText(
+            "Copy everything from this computer onto the new backup disk?\n\n"
+            f"{route}"
+        )
         copy_btn = box.addButton(COPY_NOW_TEXT, QMessageBox.ButtonRole.AcceptRole)
         box.addButton(SKIP_TEXT, QMessageBox.ButtonRole.RejectRole)
         box.exec()

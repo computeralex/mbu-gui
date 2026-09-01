@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -8,10 +9,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from mbu_gui.disks import Inventory
+from mbu_gui.disks import Inventory, describe_backup_route
 
 BOOT_FIX_WARN = (
     "Without boot fix, the backup disk might not boot if you copy root, boot, or efi."
+)
+UNKNOWN_DESTINATION_TEXT = (
+    "Cannot tell which disk would be overwritten, so this backup will not start. "
+    "Go back, make sure exactly one backup disk is plugged in, and try again."
 )
 
 
@@ -23,6 +28,17 @@ class BackupDialog(QDialog):
         self._function_checks: list[tuple[str, QCheckBox]] = []
 
         layout = QVBoxLayout(self)
+
+        self.route = describe_backup_route(inventory)
+        self.destinationLabel = QLabel(
+            self.route if self.route is not None else UNKNOWN_DESTINATION_TEXT
+        )
+        self.destinationLabel.setObjectName("destinationLabel")
+        self.destinationLabel.setWordWrap(True)
+        destination_font = QFont(self.destinationLabel.font())
+        destination_font.setBold(True)
+        self.destinationLabel.setFont(destination_font)
+        layout.addWidget(self.destinationLabel)
 
         self.bootFixCheck = QCheckBox("Boot fix")
         self.bootFixCheck.setObjectName("bootFixCheck")
@@ -49,6 +65,10 @@ class BackupDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+        self.okButton = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.okButton.setObjectName("okButton")
+        self.okButton.setEnabled(self.route is not None)
 
     def _on_boot_fix_toggled(self, checked: bool) -> None:
         self.bootFixWarnLabel.setVisible(not checked)

@@ -25,6 +25,58 @@ def test_fselection_default():
     assert "root" in fs
 
 
+def test_dialog_names_the_destination_disk():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    d = BackupDialog(inv)
+    text = d.destinationLabel.text()
+    assert "main" in text  # source set
+    assert "bak1" in text  # destination set
+    assert "sdb" in text  # destination disk
+    assert "500G" in text
+    assert "Backup Drive" in text
+    assert "serial:usb1111backupb" in text
+    assert "sda" not in text  # never points at the live disk
+    assert d.okButton.isEnabled()
+
+
+def test_dialog_refuses_when_destination_is_ambiguous():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_two_backups.json").read_text())
+    d = BackupDialog(inv)
+    assert d.route is None
+    assert not d.okButton.isEnabled()
+    assert "Cannot tell which disk" in d.destinationLabel.text()
+
+
+def test_accepted_dialog_without_route_does_not_start_backup(monkeypatch):
+    """Last-ditch guard: even an accepted dialog cannot start an unnamed backup."""
+    app()
+    from dataclasses import replace
+    from PySide6.QtWidgets import QDialog
+
+    import mbu_gui.main_window as main_window
+
+    named = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    # Start is unblocked but no destination can be described.
+    inv = replace(named, backup_sets=[], start_blocked_reason=None)
+    calls = []
+    w = MainWindow(
+        inventory=inv,
+        last_run=None,
+        helper_exists=True,
+        pkexec_exists=True,
+        start_process=lambda argv: calls.append(argv),
+        helper_path=Path("/usr/lib/mbu-gui/mbu-gui-helper"),
+    )
+    monkeypatch.setattr(
+        main_window.BackupDialog, "exec", lambda self: QDialog.DialogCode.Accepted
+    )
+    w.on_start_clicked()
+    assert calls == []
+    assert "Cannot tell which disk" in w.logView.toPlainText()
+
+
 def test_success_shows_unplug():
     app()
     inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
