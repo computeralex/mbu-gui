@@ -11,10 +11,15 @@ from mbu_gui_helper.commands import (
     sfdisk_label_argv,
 )
 from mbu_gui_helper.safety import (
+    ambiguous_disk_id_error,
     assert_label_targets_live,
     assert_not_live_disk,
     label_wrong_disk_error,
     live_disk_error,
+    missing_disk_id_error,
+    renamed_disk_error,
+    resolve_format_target,
+    unknown_disk_id_error,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -22,6 +27,56 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 def named():
     return load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+
+
+def two_backups():
+    return load_lsblk((FIXTURES / "lsblk_two_backups.json").read_text())
+
+
+def _raises(fn, message):
+    try:
+        fn()
+    except ValueError as e:
+        assert str(e) == message, f"got {e!r}, wanted {message!r}"
+        return
+    assert False, f"expected ValueError: {message}"
+
+
+def test_resolve_format_target_matches_hardware_id():
+    inv = named()
+    assert resolve_format_target("serial:usb1111backupb", "sdb", inv) == "sdb"
+    assert resolve_format_target("SERIAL:USB1111BACKUPB", "/dev/sdb", inv) == "sdb"
+
+
+def test_resolve_format_target_refuses_renamed_device():
+    """The id now belongs to sdc, but the GUI expected sdb: abort, do not guess."""
+    inv = two_backups()
+    _raises(
+        lambda: resolve_format_target("serial:usb2222backupc", "sdb", inv),
+        renamed_disk_error,
+    )
+
+
+def test_resolve_format_target_refuses_unknown_or_empty_id():
+    inv = named()
+    _raises(lambda: resolve_format_target("serial:gone", "sdb", inv), unknown_disk_id_error)
+    _raises(lambda: resolve_format_target("", "sdb", inv), missing_disk_id_error)
+    _raises(lambda: resolve_format_target("   ", "sdb", inv), missing_disk_id_error)
+
+
+def test_resolve_format_target_refuses_duplicate_ids():
+    from dataclasses import replace
+
+    inv = two_backups()
+    clashing = [
+        replace(d, serial="USB1111BACKUPB") if d.name in ("sdb", "sdc") else d
+        for d in inv.disks
+    ]
+    inv = replace(inv, disks=clashing)
+    _raises(
+        lambda: resolve_format_target("serial:usb1111backupb", "sdb", inv),
+        ambiguous_disk_id_error,
+    )
 
 
 def test_refuse_format_live_disk():

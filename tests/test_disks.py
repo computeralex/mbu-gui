@@ -5,8 +5,11 @@ from pathlib import Path
 from mbu_gui.disks import (
     Inventory,
     candidate_backup_disks,
+    confirm_token,
+    disks_with_id,
     is_valid_set_name,
     load_lsblk,
+    parse_lsblk,
     propose_function,
     propose_labels,
     split_mbu_label,
@@ -88,6 +91,48 @@ def test_candidate_backup_disks_empty_when_live_unknown():
     no_root = _load("lsblk_no_root.json")
     assert no_root.live_disk is None
     assert candidate_backup_disks(no_root) == []
+
+
+def test_disk_id_prefers_wwn_then_serial_then_ptuuid():
+    inv = _load("lsblk_named.json")
+    by_name = {d.name: d for d in inv.disks}
+    assert by_name["sda"].disk_id == "wwn:0x5000aaaa1111bbbb"  # sda has a wwn
+    assert by_name["sdb"].disk_id == "serial:usb1111backupb"  # sdb has none
+    only_ptuuid = parse_lsblk(
+        {
+            "blockdevices": [
+                {"name": "sdz", "type": "disk", "size": "1G", "ptuuid": "ABCD-1234"}
+            ]
+        }
+    )
+    assert only_ptuuid.disks[0].disk_id == "ptuuid:abcd-1234"
+
+
+def test_disk_id_is_none_without_any_persistent_identifier():
+    inv = parse_lsblk(
+        {
+            "blockdevices": [
+                {"name": "sdz", "type": "disk", "size": "1G", "serial": "  ", "wwn": None}
+            ]
+        }
+    )
+    assert inv.disks[0].disk_id is None
+    assert confirm_token(inv.disks[0]) is None
+
+
+def test_confirm_token_is_tail_of_hardware_id():
+    inv = _load("lsblk_named.json")
+    sdb = next(d for d in inv.disks if d.name == "sdb")
+    assert confirm_token(sdb) == "1backupb"
+    assert len(confirm_token(sdb)) == 8
+
+
+def test_disks_with_id_lookup():
+    inv = _load("lsblk_named.json")
+    assert [d.name for d in disks_with_id(inv, "serial:usb1111backupb")] == ["sdb"]
+    assert [d.name for d in disks_with_id(inv, "SERIAL:USB1111BACKUPB")] == ["sdb"]
+    assert disks_with_id(inv, "serial:nope") == []
+    assert disks_with_id(inv, "") == []
 
 
 def test_luks_lvm_root_marks_sda_live_and_not_a_format_candidate():

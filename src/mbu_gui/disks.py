@@ -10,6 +10,8 @@ from typing import Any
 _SET_NAME_RE = re.compile(r"^[A-Za-z0-9]+$")
 _NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]")
 
+CONFIRM_TOKEN_LEN = 8
+
 _MOUNT_FUNCTIONS = {
     "/": "root",
     "/home": "home",
@@ -48,6 +50,22 @@ class Disk:
     size: str
     model: str | None
     partitions: list[Partition]
+    serial: str | None = None
+    wwn: str | None = None
+    ptuuid: str | None = None
+
+    @property
+    def disk_id(self) -> str | None:
+        """Persistent hardware id, or None when the disk reports nothing stable.
+
+        Kernel names like sdb are reassigned on replug, so they must never be
+        the only thing identifying a disk we are about to erase.
+        """
+        for prefix, value in (("wwn", self.wwn), ("serial", self.serial), ("ptuuid", self.ptuuid)):
+            cleaned = (value or "").strip()
+            if cleaned:
+                return f"{prefix}:{cleaned.lower()}"
+        return None
 
 
 @dataclass(frozen=True)
@@ -122,6 +140,25 @@ def candidate_backup_disks(inventory: Inventory) -> list[Disk]:
     return [disk for disk in inventory.disks if disk.name != inventory.live_disk]
 
 
+def disks_with_id(inventory: Inventory, disk_id: str) -> list[Disk]:
+    wanted = disk_id.strip().lower()
+    if not wanted:
+        return []
+    return [disk for disk in inventory.disks if disk.disk_id == wanted]
+
+
+def confirm_token(disk: Disk) -> str | None:
+    """Short code the user types to confirm a wipe, derived from the hardware id.
+
+    Only an attention gate: the disk we erase is the one whose disk_id we
+    captured from the selected row, never the one whose token was typed.
+    """
+    disk_id = disk.disk_id
+    if disk_id is None:
+        return None
+    return disk_id.split(":", 1)[1][-CONFIRM_TOKEN_LEN:]
+
+
 def load_lsblk(text: str) -> Inventory:
     return parse_lsblk(json.loads(text))
 
@@ -163,6 +200,9 @@ def _disks_from_blockdevices(blockdevices: list[dict[str, Any]]) -> list[Disk]:
                 size=dev.get("size") or "",
                 model=dev.get("model"),
                 partitions=_partitions_for_disk(dev, name),
+                serial=dev.get("serial"),
+                wwn=dev.get("wwn"),
+                ptuuid=dev.get("ptuuid"),
             )
         )
     return disks

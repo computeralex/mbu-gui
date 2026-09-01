@@ -13,16 +13,31 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mbu_gui.disks import Disk, Inventory, candidate_backup_disks, is_valid_set_name
+from mbu_gui.disks import (
+    Disk,
+    Inventory,
+    candidate_backup_disks,
+    confirm_token,
+    is_valid_set_name,
+)
 
 WIPE_WARNING = "This will erase the disk."
 EMPTY_DISK_TEXT = "Plug in a new disk that is not this computer's system disk."
+NO_DISK_ID_TEXT = (
+    "This disk reports no serial number, so MBU cannot tell it apart from "
+    "another disk after a replug. Refusing to format it."
+)
+CONFIRM_PROMPT = "Type the confirmation code for the disk you selected"
+_DISK_ID_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 def _disk_item_text(disk: Disk) -> str:
     labels = ", ".join(part.partlabel for part in disk.partitions if part.partlabel)
+    serial = f"serial {disk.serial}" if disk.serial else ""
     model = disk.model or ""
-    return "  ".join(part for part in (disk.name, disk.size, model, labels) if part)
+    return "  ".join(
+        part for part in (disk.name, disk.size, model, serial, labels) if part
+    )
 
 
 class FormatPage(QWidget):
@@ -56,10 +71,13 @@ class FormatPage(QWidget):
         self.psetEdit.setPlaceholderText("Letters and digits only")
         layout.addWidget(self.psetEdit)
 
-        layout.addWidget(QLabel("Type the disk name to confirm"))
+        self.confirmPromptLabel = QLabel(CONFIRM_PROMPT)
+        self.confirmPromptLabel.setObjectName("confirmPromptLabel")
+        self.confirmPromptLabel.setWordWrap(True)
+        layout.addWidget(self.confirmPromptLabel)
+
         self.confirmEdit = QLineEdit()
         self.confirmEdit.setObjectName("confirmEdit")
-        self.confirmEdit.setPlaceholderText("Type the disk name, for example sdb")
         layout.addWidget(self.confirmEdit)
 
         buttons = QHBoxLayout()
@@ -84,21 +102,33 @@ class FormatPage(QWidget):
         for disk in disks:
             item = QListWidgetItem(_disk_item_text(disk))
             item.setData(Qt.ItemDataRole.UserRole, disk.name)
+            item.setData(_DISK_ID_ROLE, disk.disk_id)
             self.diskList.addItem(item)
         empty = not disks
         self.emptyDiskLabel.setVisible(empty)
         self.diskList.setVisible(not empty)
 
-    def selected_disk_name(self) -> str | None:
+    def _selected_disk(self) -> Disk | None:
         items = self.diskList.selectedItems()
         if len(items) != 1:
             return None
         name = items[0].data(Qt.ItemDataRole.UserRole)
-        return name if isinstance(name, str) else None
+        for disk in candidate_backup_disks(self.inventory):
+            if disk.name == name:
+                return disk
+        return None
+
+    def selected_disk_name(self) -> str | None:
+        disk = self._selected_disk()
+        return None if disk is None else disk.name
+
+    def selected_disk_id(self) -> str | None:
+        disk = self._selected_disk()
+        return None if disk is None else disk.disk_id
 
     def _can_format(self) -> bool:
-        name = self.selected_disk_name()
-        if name is None:
+        disk = self._selected_disk()
+        if disk is None or disk.disk_id is None:
             return False
         pset = self.psetEdit.text()
         if not is_valid_set_name(pset):
@@ -107,7 +137,25 @@ class FormatPage(QWidget):
             return False
         if pset in self.inventory.backup_sets:
             return False
-        return self.confirmEdit.text() == name
+        return self.confirmEdit.text().strip().lower() == confirm_token(disk)
+
+    def _sync_prompt(self) -> None:
+        disk = self._selected_disk()
+        if disk is None:
+            self.confirmPromptLabel.setText(CONFIRM_PROMPT)
+            self.confirmEdit.setPlaceholderText("")
+            return
+        if disk.disk_id is None:
+            self.confirmPromptLabel.setText(NO_DISK_ID_TEXT)
+            self.confirmEdit.setPlaceholderText("")
+            return
+        token = confirm_token(disk)
+        self.confirmPromptLabel.setText(
+            f"To erase {disk.size} {disk.model or disk.name} "
+            f"({disk.disk_id}), type this code: {token}"
+        )
+        self.confirmEdit.setPlaceholderText(token or "")
 
     def _sync_enabled(self, *args) -> None:
+        self._sync_prompt()
         self.formatButton.setEnabled(self._can_format())

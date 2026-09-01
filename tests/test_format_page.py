@@ -3,7 +3,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from pathlib import Path
 from PySide6.QtWidgets import QApplication
-from mbu_gui.disks import load_lsblk
+from mbu_gui.disks import confirm_token, load_lsblk
 from mbu_gui.format_page import FormatPage
 from mbu_gui.helper_client import failed_command_message
 from mbu_gui.main_window import PAGE_FORMAT, PAGE_HOME, MainWindow
@@ -15,7 +15,13 @@ def app():
     _app = _app or QApplication.instance() or QApplication([])
     return _app
 
-def test_format_button_requires_typed_device():
+
+def token_for(inv, name):
+    disk = next(d for d in inv.disks if d.name == name)
+    return confirm_token(disk)
+
+
+def test_format_button_requires_typed_confirmation_code():
     app()
     inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
     p = FormatPage(inv)
@@ -23,15 +29,64 @@ def test_format_button_requires_typed_device():
     assert p.diskList.count() == 1
     p.diskList.setCurrentRow(0)
     p.psetEdit.setText("bak9")
-    p.confirmEdit.setText("sda")  # live disk name — must NOT enable
+    p.confirmEdit.setText("sdb")  # kernel name is no longer the confirmation
     p._sync_enabled()
     assert not p.formatButton.isEnabled()
-    p.confirmEdit.setText("sdb")
+    p.confirmEdit.setText(token_for(inv, "sda"))  # live disk's code — wrong disk
+    p._sync_enabled()
+    assert not p.formatButton.isEnabled()
+    p.confirmEdit.setText(token_for(inv, "sdb"))
     p._sync_enabled()
     assert p.formatButton.isEnabled()
     p.psetEdit.setText("main")  # live set
     p._sync_enabled()
     assert not p.formatButton.isEnabled()
+
+
+def test_confirmation_code_is_case_insensitive_and_trimmed():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    p = FormatPage(inv)
+    p.diskList.setCurrentRow(0)
+    p.psetEdit.setText("bak9")
+    p.confirmEdit.setText("  " + (token_for(inv, "sdb") or "").upper() + " ")
+    p._sync_enabled()
+    assert p.formatButton.isEnabled()
+
+
+def test_disk_without_serial_cannot_be_formatted():
+    app()
+    import json
+
+    data = json.loads((FIXTURES / "lsblk_named.json").read_text())
+    for dev in data["blockdevices"]:
+        if dev["name"] == "sdb":
+            dev["serial"] = None
+            dev["wwn"] = None
+            dev["ptuuid"] = None
+    from mbu_gui.disks import parse_lsblk
+
+    inv = parse_lsblk(data)
+    p = FormatPage(inv)
+    p.diskList.setCurrentRow(0)
+    p.psetEdit.setText("bak9")
+    p.confirmEdit.setText("sdb")
+    p._sync_enabled()
+    assert p.selected_disk_id() is None
+    assert not p.formatButton.isEnabled()
+    assert "no serial number" in p.confirmPromptLabel.text()
+
+
+def test_prompt_shows_hardware_id_and_code():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    p = FormatPage(inv)
+    p.diskList.setCurrentRow(0)
+    p._sync_enabled()
+    text = p.confirmPromptLabel.text()
+    assert "500G" in text
+    assert "serial:usb1111backupb" in text
+    assert (token_for(inv, "sdb") or "") in text
 
 
 def test_wipe_warning_is_exact():
@@ -60,7 +115,7 @@ def test_existing_backup_set_does_not_enable():
     p = FormatPage(inv)
     p.diskList.setCurrentRow(0)
     p.psetEdit.setText("bak1")
-    p.confirmEdit.setText("sdb")
+    p.confirmEdit.setText(token_for(inv, "sdb"))
     p._sync_enabled()
     assert not p.formatButton.isEnabled()
 
@@ -69,12 +124,13 @@ def test_confirm_path_and_invalid_pset_stay_disabled():
     app()
     inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
     p = FormatPage(inv)
+    token = token_for(inv, "sdb")
     p.diskList.setCurrentRow(0)
     p.psetEdit.setText("bak9")
     p.confirmEdit.setText("/dev/sdb")
     p._sync_enabled()
     assert not p.formatButton.isEnabled()
-    p.confirmEdit.setText("sdb")
+    p.confirmEdit.setText(token)
     p.psetEdit.setText("bak-9")
     p._sync_enabled()
     assert not p.formatButton.isEnabled()
@@ -83,7 +139,7 @@ def test_confirm_path_and_invalid_pset_stay_disabled():
     assert not p.formatButton.isEnabled()
     p.diskList.clearSelection()
     p.psetEdit.setText("bak9")
-    p.confirmEdit.setText("sdb")
+    p.confirmEdit.setText(token)
     p._sync_enabled()
     assert not p.formatButton.isEnabled()
 
@@ -168,7 +224,7 @@ def _ready_format(w):
     w.formatButton.click()
     w.formatPage.diskList.setCurrentRow(0)
     w.formatPage.psetEdit.setText("bak9")
-    w.formatPage.confirmEdit.setText("sdb")
+    w.formatPage.confirmEdit.setText(token_for(w.formatPage.inventory, "sdb"))
     w.formatPage._sync_enabled()
 
 
@@ -193,6 +249,8 @@ def test_format_runs_format_disk_not_live():
         "format-disk",
         "--disk",
         "sdb",
+        "--disk-id",
+        "serial:usb1111backupb",
         "--pset",
         "bak9",
     ]

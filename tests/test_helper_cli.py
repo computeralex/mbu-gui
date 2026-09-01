@@ -35,9 +35,13 @@ def test_backup_runs_mbup_then_clean(tmp_path, capsys):
     assert "fake-mbuclean" in out
 
 
+SDA_ID = "wwn:0x5000aaaa1111bbbb"  # sda reports a wwn, which wins over its serial
+SDB_ID = "serial:usb1111backupb"
+
+
 def test_format_disk_refuses_live(tmp_path, capsys):
     code = main(
-        ["format-disk", "--disk", "sda", "--pset", "bak9"],
+        ["format-disk", "--disk", "sda", "--disk-id", SDA_ID, "--pset", "bak9"],
         environ=_env(tmp_path),
         lsblk_data=_lsblk(),
     )
@@ -47,7 +51,7 @@ def test_format_disk_refuses_live(tmp_path, capsys):
 
 def test_format_disk_refuses_when_live_unknown(tmp_path, capsys):
     code = main(
-        ["format-disk", "--disk", "sdb", "--pset", "bak9"],
+        ["format-disk", "--disk", "sdb", "--disk-id", SDB_ID, "--pset", "bak9"],
         environ=_env(tmp_path),
         lsblk_data=_lsblk("lsblk_no_root.json"),
     )
@@ -57,7 +61,7 @@ def test_format_disk_refuses_when_live_unknown(tmp_path, capsys):
 
 def test_format_disk_refuses_luks_lvm_live_sda(tmp_path, capsys):
     code = main(
-        ["format-disk", "--disk", "sda", "--pset", "bak9"],
+        ["format-disk", "--disk", "sda", "--disk-id", SDA_ID, "--pset", "bak9"],
         environ=_env(tmp_path),
         lsblk_data=_lsblk("lsblk_luks_lvm.json"),
     )
@@ -67,7 +71,7 @@ def test_format_disk_refuses_luks_lvm_live_sda(tmp_path, capsys):
 
 def test_format_disk_allows_sdb_when_root_is_luks_lvm(tmp_path, capsys):
     code = main(
-        ["format-disk", "--disk", "sdb", "--pset", "bak9"],
+        ["format-disk", "--disk", "sdb", "--disk-id", SDB_ID, "--pset", "bak9"],
         environ=_env(tmp_path),
         lsblk_data=_lsblk("lsblk_luks_lvm.json"),
     )
@@ -79,7 +83,7 @@ def test_format_disk_allows_sdb_when_root_is_luks_lvm(tmp_path, capsys):
 
 def test_format_disk_allows_sdb(tmp_path, capsys):
     code = main(
-        ["format-disk", "--disk", "sdb", "--pset", "bak1"],
+        ["format-disk", "--disk", "sdb", "--disk-id", SDB_ID, "--pset", "bak1"],
         environ=_env(tmp_path),
         lsblk_data=_lsblk(),
     )
@@ -89,6 +93,49 @@ def test_format_disk_allows_sdb(tmp_path, capsys):
     assert "mbuFormatDisk" in out
     assert "disk=sdb" in out
     assert "fake-mbuclean" in out
+
+
+def test_format_disk_refuses_when_device_renamed(tmp_path, capsys):
+    """GUI saw the target as sdb; by now that hardware id is sdc."""
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", "serial:usb2222backupc", "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_two_backups.json"),
+    )
+    assert code == 2
+    assert "changed device name" in capsys.readouterr().out
+
+
+def test_format_disk_refuses_unknown_hardware_id(tmp_path, capsys):
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", "serial:notplugged", "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+    )
+    assert code == 2
+    assert "no attached disk has that hardware id" in capsys.readouterr().out
+
+
+def test_format_disk_refuses_empty_hardware_id(tmp_path, capsys):
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", "", "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+    )
+    assert code == 2
+    assert "no serial number" in capsys.readouterr().out
+
+
+def test_format_disk_does_not_run_mbu_when_id_check_fails(tmp_path):
+    calls = []
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", "serial:notplugged", "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda argv, **kwargs: calls.append(list(argv)) or 0,
+    )
+    assert code == 2
+    assert calls == []
 
 
 def test_format_disk_cleans_after_format_failure(tmp_path):
@@ -101,7 +148,7 @@ def test_format_disk_cleans_after_format_failure(tmp_path):
         return 0
 
     code = main(
-        ["format-disk", "--disk", "sdb", "--pset", "bak1"],
+        ["format-disk", "--disk", "sdb", "--disk-id", SDB_ID, "--pset", "bak1"],
         environ=_env(tmp_path),
         lsblk_data=_lsblk(),
         run=run,

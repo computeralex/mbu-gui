@@ -21,13 +21,17 @@ from mbu_gui_helper.commands import (
     sfdisk_label_argv,
 )
 from mbu_gui_helper.runner import run_streamed
-from mbu_gui_helper.safety import assert_label_targets_live, assert_not_live_disk
+from mbu_gui_helper.safety import (
+    assert_label_targets_live,
+    assert_not_live_disk,
+    resolve_format_target,
+)
 
 LSBLK_ARGV = [
     "lsblk",
     "-J",
     "-o",
-    "NAME,PATH,TYPE,SIZE,FSTYPE,MOUNTPOINT,PARTLABEL,PARTN,UUID,MODEL",
+    "NAME,PATH,TYPE,SIZE,FSTYPE,MOUNTPOINT,PARTLABEL,PARTN,UUID,MODEL,SERIAL,WWN,PTUUID",
 ]
 
 
@@ -61,6 +65,7 @@ def _build_parser() -> ArgumentParser:
 
     fmt = sub.add_parser("format-disk")
     fmt.add_argument("--disk", required=True)
+    fmt.add_argument("--disk-id", required=True, dest="disk_id")
     fmt.add_argument("--pset", required=True)
 
     label = sub.add_parser("label-live")
@@ -204,12 +209,13 @@ def _dispatch(args, *, paths, env, lsblk_data, environ, run) -> int:
         return invoke(format_table_argv())
 
     if args.command == "format-disk":
-        assert_not_live_disk(args.disk, inventory)
+        target = resolve_format_target(args.disk_id, args.disk, inventory)
+        assert_not_live_disk(target, inventory)
         table_code = invoke(format_table_argv())
         format_code = 0
         if table_code == 0:
             tablefile = str(paths.out_dir / "mbuformat.table")
-            format_code = invoke(format_disk_argv(args.disk, args.pset, tablefile))
+            format_code = invoke(format_disk_argv(target, args.pset, tablefile))
         primary = table_code if table_code != 0 else format_code
         return then_clean(primary)
 

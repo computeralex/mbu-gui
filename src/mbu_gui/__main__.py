@@ -13,7 +13,9 @@ from mbu_gui.paths import resolve_paths
 _INSTALLED_DESKTOP = Path("/usr/share/applications/mbu-gui.desktop")
 _REPO_DESKTOP = Path(__file__).resolve().parents[2] / "data" / "mbu-gui.desktop"
 
-_LSBLK_COLUMNS = "NAME,PATH,TYPE,SIZE,FSTYPE,MOUNTPOINT,PARTLABEL,PARTN,UUID,MODEL"
+_LSBLK_COLUMNS = (
+    "NAME,PATH,TYPE,SIZE,FSTYPE,MOUNTPOINT,PARTLABEL,PARTN,UUID,MODEL,SERIAL,WWN,PTUUID"
+)
 
 
 def load_inventory() -> Inventory:

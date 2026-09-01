@@ -395,9 +395,10 @@ class MainWindow(QMainWindow):
         if self._running or not self.formatPage._can_format():
             return
         name = self.formatPage.selected_disk_name()
-        if name is None:
+        disk_id = self.formatPage.selected_disk_id()
+        if name is None or disk_id is None:
             return
-        self._run_format_disk(name, self.formatPage.psetEdit.text())
+        self._run_format_disk(name, disk_id, self.formatPage.psetEdit.text())
 
     def on_browse_clicked(self) -> None:
         if self._running:
@@ -481,7 +482,7 @@ class MainWindow(QMainWindow):
         proc.finished.connect(self._on_process_finished)
         proc.start(argv)
 
-    def _run_format_disk(self, disk: str, pset: str) -> None:
+    def _run_format_disk(self, disk: str, disk_id: str, pset: str) -> None:
         if self._running:
             return
         self._helper_kind = "format-disk"
@@ -491,7 +492,10 @@ class MainWindow(QMainWindow):
             self.show_error(self._missing_helper_message(helper_ok))
             self._go_home()
             return
-        argv = pkexec_argv(helper, ["format-disk", "--disk", disk, "--pset", pset])
+        argv = pkexec_argv(
+            helper,
+            ["format-disk", "--disk", disk, "--disk-id", disk_id, "--pset", pset],
+        )
         self._helper_output = []
         self.show_unplug(False)
         self.set_running(True)
