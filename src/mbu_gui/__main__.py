@@ -33,6 +33,11 @@ def load_last_run() -> LastRun | None:
     return parse_master_log(paths.master_log.read_text(errors="replace"))
 
 
+def backup_unfinished() -> bool:
+    """True when a previous backup never finished cleanly, even across a crash."""
+    return resolve_paths().incomplete_marker.exists()
+
+
 def main() -> int:
     try:
         from mbu_gui.app import create_app
@@ -58,6 +63,7 @@ def main() -> int:
         reload_last_run=load_last_run,
         helper_exists=bool(which_helper()),
         pkexec_exists=bool(shutil.which("pkexec")),
+        backup_unfinished=backup_unfinished(),
     )
     if err:
         w.show_error(err)

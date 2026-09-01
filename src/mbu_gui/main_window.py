@@ -31,6 +31,12 @@ UNPLUG_BANNER_TEXT = (
     "Unplug the backup disk now.\n"
     "Duplicate UUIDs confuse Linux if you leave it plugged in."
 )
+UNPLUG_UNFINISHED_TEXT = (
+    "The backup did not finish. Unplug the backup disk anyway.\n"
+    "MBU clones UUIDs one partition at a time, so this disk may already share "
+    "UUIDs with this computer. Leaving it plugged in can make Linux boot from "
+    "the wrong disk."
+)
 COPY_NOW_TEXT = "Copy everything now"
 SKIP_TEXT = "Skip"
 
@@ -80,6 +86,7 @@ class MainWindow(QMainWindow):
         reload_last_run: Callable[[], LastRun | None] | None = None,
         ask_copy_now: Callable[[], bool] | None = None,
         open_dir: Callable[[str], None] | None = None,
+        backup_unfinished: bool = False,
         parent=None,
     ):
         super().__init__(parent)
@@ -171,6 +178,8 @@ class MainWindow(QMainWindow):
             "background-color: #F4D03F; color: #000000; font-weight: bold; padding: 12px;"
         )
         self.unplugBanner.hide()
+        if backup_unfinished:
+            self.show_unplug(True, text=UNPLUG_UNFINISHED_TEXT)
 
         self.setupPage = SetupPage(inventory)
         self.setupPage.setObjectName("setupPage")
@@ -324,7 +333,8 @@ class MainWindow(QMainWindow):
             return
         super().closeEvent(event)
 
-    def show_unplug(self, visible: bool) -> None:
+    def show_unplug(self, visible: bool, *, text: str = UNPLUG_BANNER_TEXT) -> None:
+        self.unplugBanner.setText(text)
         self.unplugBanner.setVisible(visible)
 
     def append_log(self, line: str) -> None:
@@ -581,7 +591,9 @@ class MainWindow(QMainWindow):
             self.refresh()
             return
         self.show_error(self._explain_failure(code, stderr))
-        self.show_unplug(False)
+        # A backup that got as far as running may already have cloned UUIDs, so
+        # the disk still has to come out even though the run failed.
+        self.show_unplug(True, text=UNPLUG_UNFINISHED_TEXT)
         self.set_running(False)
 
     def on_label_live_finished(self, code: int, stderr: str = "") -> None:

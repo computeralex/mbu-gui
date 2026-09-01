@@ -25,6 +25,7 @@ class MbuPaths:
     master_log: Path
     backup_latest_log: Path
     format_latest_log: Path
+    incomplete_marker: Path
 
 
 def _default_mbu_dir(environ: Mapping[str, str]) -> Path:
@@ -57,4 +58,8 @@ def resolve_paths(
         master_log=log_dir / "mbu.log",
         backup_latest_log=log_dir / "mbup-latest.log",
         format_latest_log=log_dir / "mbuformat-latest.log",
+        # Present from the moment a backup starts until one finishes cleanly, so
+        # a crash or a killed GUI still leaves evidence that MBU may have
+        # already cloned filesystem UUIDs onto the backup disk.
+        incomplete_marker=state_dir / "backup-incomplete",
     )

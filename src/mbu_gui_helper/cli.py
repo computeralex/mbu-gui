@@ -118,6 +118,19 @@ def prepare_state_dirs(paths: MbuPaths) -> None:
         _make_state_dir(directory, parents=False)
 
 
+def mark_backup_started(paths: MbuPaths) -> None:
+    """Record that a backup is under way before MBU can clone any UUID.
+
+    MBU copies filesystem UUIDs partition by partition, so a run that dies
+    part way through can leave the backup disk sharing UUIDs with this
+    computer. The marker outlives a crashed helper or a killed GUI.
+    """
+    marker = paths.incomplete_marker
+    if marker.is_symlink() or (marker.exists() and not marker.is_file()):
+        raise ValueError(f"{state_symlink_error}: {marker}")
+    marker.write_text("a backup started and has not finished cleanly\n")
+
+
 def format_table_path(paths: MbuPaths) -> Path:
     """Path MBU writes the generated format table to, cleared before each use.
 
@@ -175,7 +188,11 @@ def _dispatch(args, *, paths, env, lsblk_data, environ, run) -> int:
         return primary if primary != 0 else clean
 
     if args.command == "backup":
-        return then_clean(invoke(mbup_argv(args.fselection)))
+        mark_backup_started(paths)
+        code = then_clean(invoke(mbup_argv(args.fselection)))
+        if code == 0:
+            paths.incomplete_marker.unlink(missing_ok=True)
+        return code
 
     if args.command == "clean":
         return invoke(mbuclean_argv())

@@ -118,13 +118,43 @@ def test_success_reloads_last_run_label():
     assert w.lastRunLabel.text() == "Last backup: 2026/01/02-03:04:05  main → bak1"
 
 
-def test_failure_stays_on_screen():
+def test_failed_backup_still_warns_to_unplug():
+    """UUIDs are cloned per partition, so a failed run may already have cloned some."""
     app()
     inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
     w = MainWindow(inventory=inv, last_run=None, helper_exists=True, pkexec_exists=True, start_process=lambda argv: None, helper_path=Path("/usr/lib/mbu-gui/mbu-gui-helper"))
     w.on_helper_finished(1)
     assert failed_command_message(1) in w.logView.toPlainText()
+    assert not w.unplugBanner.isHidden()
+    assert "did not finish" in w.unplugBanner.text()
+    assert "Unplug the backup disk anyway" in w.unplugBanner.text()
+
+
+def test_crashed_backup_warns_on_next_launch():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = MainWindow(inventory=inv, last_run=None, backup_unfinished=True)
+    assert not w.unplugBanner.isHidden()
+    assert "did not finish" in w.unplugBanner.text()
+
+
+def test_clean_launch_shows_no_banner():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = MainWindow(inventory=inv, last_run=None, backup_unfinished=False)
     assert w.unplugBanner.isHidden()
+
+
+def test_successful_backup_uses_the_plain_unplug_text():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = MainWindow(inventory=inv, last_run=None, helper_exists=True, pkexec_exists=True, start_process=lambda argv: None, helper_path=Path("/usr/lib/mbu-gui/mbu-gui-helper"))
+    w.on_helper_finished(1)
+    assert "did not finish" in w.unplugBanner.text()
+    w.on_helper_finished(0)
+    assert not w.unplugBanner.isHidden()
+    assert "did not finish" not in w.unplugBanner.text()
+    assert "Unplug the backup disk now" in w.unplugBanner.text()
 
 
 def test_cancelled_pkexec_message():

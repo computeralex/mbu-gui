@@ -218,6 +218,71 @@ def test_label_live_sfdisk_argv(tmp_path):
     assert captured[0] == ["sfdisk", "--part-label", "/dev/sda", "2", "main-root"]
 
 
+def test_backup_marker_written_before_run_and_cleared_on_success(tmp_path):
+    state = _state(tmp_path)
+    marker = state / "backup-incomplete"
+    seen = {}
+
+    def run(argv, **kwargs):
+        if argv[0] == "./mbup":
+            seen["marker_during_run"] = marker.exists()
+        return 0
+
+    code = main(
+        ["backup", "--fselection", "-bootfix,root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=run,
+        state_dir=state,
+    )
+    assert code == 0
+    assert seen["marker_during_run"] is True
+    assert not marker.exists()
+
+
+def test_backup_marker_survives_a_failed_run(tmp_path):
+    state = _state(tmp_path)
+    marker = state / "backup-incomplete"
+    code = main(
+        ["backup", "--fselection", "-bootfix,root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda argv, **k: 5 if argv[0] == "./mbup" else 0,
+        state_dir=state,
+    )
+    assert code == 5
+    assert marker.exists()
+
+
+def test_backup_marker_survives_a_failed_unmount_after_a_good_copy(tmp_path):
+    """mbuclean failing must not be reported as safe to leave plugged in."""
+    state = _state(tmp_path)
+    marker = state / "backup-incomplete"
+    code = main(
+        ["backup", "--fselection", "root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda argv, **k: 3 if argv[0] == "./mbuclean" else 0,
+        state_dir=state,
+    )
+    assert code == 3
+    assert marker.exists()
+
+
+def test_format_does_not_write_the_backup_marker(tmp_path):
+    """Formatting does not clone UUIDs, so it must not raise the warning."""
+    state = _state(tmp_path)
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", SDB_ID, "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda *a, **k: 0,
+        state_dir=state,
+    )
+    assert code == 0
+    assert not (state / "backup-incomplete").exists()
+
+
 def test_state_dirs_are_created_under_root_owned_state(tmp_path):
     state = _state(tmp_path)
     code = main(
