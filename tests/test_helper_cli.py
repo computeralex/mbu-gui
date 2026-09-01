@@ -1,8 +1,6 @@
 from pathlib import Path
-from types import SimpleNamespace
 import json
 import os
-import stat
 
 from mbu_gui_helper.cli import main
 
@@ -216,6 +214,108 @@ def test_label_live_sfdisk_argv(tmp_path):
     assert captured[0][0] == "sfdisk"
     assert "--part-label" in captured[0]
     assert captured[0] == ["sfdisk", "--part-label", "/dev/sda", "2", "main-root"]
+
+
+def test_first_backup_records_this_machine(tmp_path):
+    state = _state(tmp_path)
+    code = main(
+        ["backup", "--fselection", "root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda *a, **k: 0,
+        state_dir=state,
+    )
+    assert code == 0
+    record = json.loads((state / "machine.json").read_text())
+    assert record["machine_set"] == "main"
+    assert record["disk_id"] == "wwn:0x5000aaaa1111bbbb"
+
+
+def test_backup_refused_when_running_from_the_clone(tmp_path, capsys):
+    """Booted from bak1 with the internal disk attached: roles are inverted."""
+    state = _state(tmp_path)
+    state.mkdir(parents=True)
+    (state / "machine.json").write_text(json.dumps({"machine_set": "main"}) + "\n")
+    inverted = _lsblk()
+    # Swap which disk carries /: the backup set bak1 is now the running root.
+    for dev in inverted["blockdevices"]:
+        for child in dev.get("children") or []:
+            if child.get("mountpoint") == "/":
+                child["mountpoint"] = None
+            if child.get("partlabel") == "bak1-root":
+                child["mountpoint"] = "/"
+    calls = []
+    code = main(
+        ["backup", "--fselection", "-bootfix,root"],
+        environ=_env(tmp_path),
+        lsblk_data=inverted,
+        run=lambda argv, **k: calls.append(list(argv)) or 0,
+        state_dir=state,
+    )
+    assert code == 2
+    out = capsys.readouterr().out
+    assert "recorded as set `main`" in out
+    assert "running from set `bak1`" in out
+    assert calls == []
+    assert not (state / "backup-incomplete").exists()
+
+
+def test_backup_allowed_when_record_matches(tmp_path):
+    state = _state(tmp_path)
+    state.mkdir(parents=True)
+    (state / "machine.json").write_text(json.dumps({"machine_set": "main"}) + "\n")
+    code = main(
+        ["backup", "--fselection", "root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda *a, **k: 0,
+        state_dir=state,
+    )
+    assert code == 0
+
+
+def test_corrupt_machine_record_refuses_backup(tmp_path, capsys):
+    state = _state(tmp_path)
+    state.mkdir(parents=True)
+    (state / "machine.json").write_text("not json")
+    calls = []
+    code = main(
+        ["backup", "--fselection", "root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda argv, **k: calls.append(list(argv)) or 0,
+        state_dir=state,
+    )
+    assert code == 2
+    assert "Refusing to back up" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_label_live_records_the_chosen_set(tmp_path):
+    state = _state(tmp_path)
+    code = main(
+        ["label-live", "--labels", "sda2=newname-root,sda1=newname-efi"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_unnamed.json"),
+        run=lambda *a, **k: 0,
+        state_dir=state,
+    )
+    assert code == 0
+    record = json.loads((state / "machine.json").read_text())
+    assert record["machine_set"] == "newname"
+
+
+def test_failed_label_live_does_not_record(tmp_path):
+    state = _state(tmp_path)
+    code = main(
+        ["label-live", "--labels", "sda2=newname-root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_unnamed.json"),
+        run=lambda *a, **k: 9,
+        state_dir=state,
+    )
+    assert code == 9
+    assert not (state / "machine.json").exists()
 
 
 def test_backup_marker_written_before_run_and_cleared_on_success(tmp_path):

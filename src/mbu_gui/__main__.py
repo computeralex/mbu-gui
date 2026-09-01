@@ -8,6 +8,7 @@ from pathlib import Path
 from mbu_gui.disks import Inventory, load_lsblk
 from mbu_gui.helper_client import which_helper
 from mbu_gui.logs import LastRun, parse_master_log
+from mbu_gui.machine import apply_machine_guard, load_machine_record, record_path
 from mbu_gui.paths import resolve_paths
 
 _INSTALLED_DESKTOP = Path("/usr/share/applications/mbu-gui.desktop")
@@ -23,7 +24,9 @@ def load_inventory() -> Inventory:
         ["lsblk", "-J", "-o", _LSBLK_COLUMNS],
         text=True,
     )
-    return load_lsblk(out)
+    inventory = load_lsblk(out)
+    record = load_machine_record(record_path(resolve_paths().state_dir))
+    return apply_machine_guard(inventory, record)
 
 
 def load_last_run() -> LastRun | None:

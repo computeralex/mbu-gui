@@ -8,7 +8,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-from mbu_gui.disks import parse_lsblk
+from mbu_gui.disks import parse_lsblk, split_mbu_label
+from mbu_gui.machine import (
+    MachineRecord,
+    inversion_reason,
+    live_disk_id,
+    load_machine_record,
+    record_for,
+    record_path,
+    save_machine_record,
+)
 from mbu_gui.paths import MbuPaths, resolve_paths
 from mbu_gui_helper.commands import (
     format_disk_argv,
@@ -118,6 +127,35 @@ def prepare_state_dirs(paths: MbuPaths) -> None:
         _make_state_dir(directory, parents=False)
 
 
+def record_labelled_machine(paths: MbuPaths, planned, inventory) -> None:
+    """Setup just named this computer's partitions, so record the set it chose."""
+    for _part, label in planned:
+        parsed = split_mbu_label(label)
+        if parsed is not None:
+            save_machine_record(
+                record_path(paths.state_dir),
+                MachineRecord(machine_set=parsed[0], disk_id=live_disk_id(inventory)),
+            )
+            return
+
+
+def assert_not_running_from_backup(paths: MbuPaths, inventory) -> None:
+    """Refuse to back up when the running system is not the recorded machine.
+
+    Recorded on the first backup, when the running root is necessarily the
+    real machine: a clone cannot exist before one has been made.
+    """
+    path = record_path(paths.state_dir)
+    record = load_machine_record(path)
+    reason = inversion_reason(record, inventory)
+    if reason is not None:
+        raise ValueError(reason)
+    if record is None:
+        first = record_for(inventory)
+        if first is not None:
+            save_machine_record(path, first)
+
+
 def mark_backup_started(paths: MbuPaths) -> None:
     """Record that a backup is under way before MBU can clone any UUID.
 
@@ -188,6 +226,7 @@ def _dispatch(args, *, paths, env, lsblk_data, environ, run) -> int:
         return primary if primary != 0 else clean
 
     if args.command == "backup":
+        assert_not_running_from_backup(paths, inventory)
         mark_backup_started(paths)
         code = then_clean(invoke(mbup_argv(args.fselection)))
         if code == 0:
@@ -225,6 +264,7 @@ def _dispatch(args, *, paths, env, lsblk_data, environ, run) -> int:
             code = invoke(sfdisk_label_argv(part.disk, part.partn, label))
             if code != 0:
                 return code
+        record_labelled_machine(paths, planned, inventory)
         return 0
 
     raise ValueError(f"Unknown command: {args.command}")
