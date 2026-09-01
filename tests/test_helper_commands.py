@@ -13,12 +13,13 @@ from mbu_gui_helper.commands import (
 from mbu_gui_helper.safety import (
     ambiguous_disk_id_error,
     assert_label_targets_live,
-    assert_not_live_disk,
+    assert_not_system_disk,
     label_wrong_disk_error,
     live_disk_error,
     missing_disk_id_error,
     renamed_disk_error,
     resolve_format_target,
+    system_disk_error,
     unknown_disk_id_error,
 )
 
@@ -81,34 +82,32 @@ def test_resolve_format_target_refuses_duplicate_ids():
 
 def test_refuse_format_live_disk():
     inv = named()
-    try:
-        assert_not_live_disk("sda", inv)
-        assert False, "expected ValueError"
-    except ValueError as e:
-        assert str(e) == live_disk_error
-    try:
-        assert_not_live_disk("/dev/sda", inv)
-        assert False, "expected ValueError"
-    except ValueError as e:
-        assert str(e) == live_disk_error
-    assert_not_live_disk("sdb", inv)  # does not raise
+    _raises(lambda: assert_not_system_disk("sda", inv), live_disk_error)
+    _raises(lambda: assert_not_system_disk("/dev/sda", inv), live_disk_error)
+    assert_not_system_disk("sdb", inv)  # does not raise
 
 
 def test_refuse_format_when_live_disk_unknown():
     inv = Inventory.empty("could not find /")
     for name in ("sda", "sdb", "/dev/nvme0n1"):
-        try:
-            assert_not_live_disk(name, inv)
-            assert False, "expected ValueError"
-        except ValueError as e:
-            assert str(e) == live_disk_error
+        _raises(lambda n=name: assert_not_system_disk(n, inv), live_disk_error)
     no_root = load_lsblk((FIXTURES / "lsblk_no_root.json").read_text())
     assert no_root.live_disk is None
-    try:
-        assert_not_live_disk("sdb", no_root)
-        assert False, "expected ValueError"
-    except ValueError as e:
-        assert str(e) == live_disk_error
+    _raises(lambda: assert_not_system_disk("sdb", no_root), live_disk_error)
+
+
+def test_refuse_format_disk_holding_efi_or_swap_but_not_root():
+    inv = load_lsblk((FIXTURES / "lsblk_split_boot.json").read_text())
+    _raises(lambda: assert_not_system_disk("sda", inv), system_disk_error)
+    _raises(lambda: assert_not_system_disk("/dev/sda", inv), system_disk_error)
+    _raises(lambda: assert_not_system_disk("nvme0n1", inv), live_disk_error)
+    assert_not_system_disk("sdb", inv)  # the actual spare
+
+
+def test_refuse_format_second_member_of_spanning_vg():
+    inv = load_lsblk((FIXTURES / "lsblk_vg_spans_two_disks.json").read_text())
+    _raises(lambda: assert_not_system_disk("sdb", inv), system_disk_error)
+    assert_not_system_disk("sdc", inv)
 
 
 def test_refuse_label_on_backup_disk():

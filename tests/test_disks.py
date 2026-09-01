@@ -93,6 +93,119 @@ def test_candidate_backup_disks_empty_when_live_unknown():
     assert candidate_backup_disks(no_root) == []
 
 
+def test_separate_efi_and_swap_disk_is_not_a_format_candidate():
+    """root is on nvme0n1 but sda holds /boot/efi and active swap."""
+    inv = _load("lsblk_split_boot.json")
+    assert inv.live_disk == "nvme0n1"
+    assert set(inv.system_disks) == {"nvme0n1", "sda"}
+    assert [d.name for d in candidate_backup_disks(inv)] == ["sdb"]
+
+
+def test_every_member_of_a_spanning_vg_is_excluded():
+    """The LV carrying / appears under both PVs; neither disk may be erased."""
+    inv = _load("lsblk_vg_spans_two_disks.json")
+    assert inv.live_disk == "sda"
+    assert set(inv.system_disks) == {"sda", "sdb"}
+    assert [d.name for d in candidate_backup_disks(inv)] == ["sdc"]
+
+
+def test_removable_automounts_stay_formattable():
+    """A desktop automount under /media is the disk the user wants to prepare."""
+    inv = parse_lsblk(
+        {
+            "blockdevices": [
+                {
+                    "name": "sda",
+                    "type": "disk",
+                    "size": "256G",
+                    "serial": "SYS0",
+                    "children": [
+                        {"name": "sda1", "type": "part", "mountpoint": "/", "partlabel": "main-root", "partn": 1}
+                    ],
+                },
+                {
+                    "name": "sdb",
+                    "type": "disk",
+                    "size": "32G",
+                    "serial": "USB1",
+                    "children": [
+                        {"name": "sdb1", "type": "part", "mountpoint": "/media/alex/STICK", "partn": 1}
+                    ],
+                },
+                {
+                    "name": "sdc",
+                    "type": "disk",
+                    "size": "32G",
+                    "serial": "USB2",
+                    "children": [
+                        {"name": "sdc1", "type": "part", "mountpoint": "/run/media/alex/OTHER", "partn": 1}
+                    ],
+                },
+            ]
+        }
+    )
+    assert inv.system_disks == ["sda"]
+    assert [d.name for d in candidate_backup_disks(inv)] == ["sdb", "sdc"]
+
+
+def test_disk_mounted_somewhere_unexpected_is_treated_as_system():
+    inv = parse_lsblk(
+        {
+            "blockdevices": [
+                {
+                    "name": "sda",
+                    "type": "disk",
+                    "serial": "SYS0",
+                    "children": [
+                        {"name": "sda1", "type": "part", "mountpoint": "/", "partlabel": "main-root", "partn": 1}
+                    ],
+                },
+                {
+                    "name": "sdb",
+                    "type": "disk",
+                    "serial": "DATA",
+                    "children": [{"name": "sdb1", "type": "part", "mountpoint": "/srv/data", "partn": 1}],
+                },
+            ]
+        }
+    )
+    assert set(inv.system_disks) == {"sda", "sdb"}
+    assert candidate_backup_disks(inv) == []
+
+
+def test_multiple_mountpoints_are_all_considered():
+    """btrfs subvolumes: MOUNTPOINT shows one, MOUNTPOINTS shows them all."""
+    inv = parse_lsblk(
+        {
+            "blockdevices": [
+                {
+                    "name": "sda",
+                    "type": "disk",
+                    "serial": "SYS0",
+                    "children": [
+                        {
+                            "name": "sda1",
+                            "type": "part",
+                            "mountpoint": "/home",
+                            "mountpoints": ["/home", "/"],
+                            "partlabel": "main-root",
+                            "partn": 1,
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    assert inv.live_disk == "sda"
+    assert inv.system_disks == ["sda"]
+
+
+def test_inactive_swap_on_a_spare_disk_stays_formattable():
+    inv = _load("lsblk_named.json")
+    assert set(inv.system_disks) == {"sda"}
+    assert [d.name for d in candidate_backup_disks(inv)] == ["sdb"]
+
+
 def test_disk_id_prefers_wwn_then_serial_then_ptuuid():
     inv = _load("lsblk_named.json")
     by_name = {d.name: d for d in inv.disks}

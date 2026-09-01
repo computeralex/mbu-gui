@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import re
 from typing import Any
@@ -11,6 +11,12 @@ _SET_NAME_RE = re.compile(r"^[A-Za-z0-9]+$")
 _NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]")
 
 CONFIRM_TOKEN_LEN = 8
+
+SWAP_MOUNTPOINT = "[SWAP]"
+# Anything mounted outside these trees counts as the running system using the
+# disk. Removable-media mounts are where the desktop auto-mounts a USB stick,
+# which is exactly the disk the user wants to prepare as a backup.
+_REMOVABLE_MOUNT_DIRS = ("/media", "/run/media", "/mnt")
 
 _MOUNT_FUNCTIONS = {
     "/": "root",
@@ -79,6 +85,7 @@ class Inventory:
     multiple_backup_sets: bool
     status_line: str
     start_blocked_reason: str | None
+    system_disks: list[str] = field(default_factory=list)
 
     @classmethod
     def empty(cls, reason: str) -> Inventory:
@@ -92,6 +99,7 @@ class Inventory:
             multiple_backup_sets=False,
             status_line="Could not read disks",
             start_blocked_reason=reason,
+            system_disks=[],
         )
 
 
@@ -137,7 +145,8 @@ def propose_labels(inventory: Inventory, set_name: str) -> list[tuple[Partition,
 def candidate_backup_disks(inventory: Inventory) -> list[Disk]:
     if inventory.live_disk is None:
         return []
-    return [disk for disk in inventory.disks if disk.name != inventory.live_disk]
+    excluded = {inventory.live_disk, *inventory.system_disks}
+    return [disk for disk in inventory.disks if disk.name not in excluded]
 
 
 def disks_with_id(inventory: Inventory, disk_id: str) -> list[Disk]:
@@ -184,6 +193,7 @@ def parse_lsblk(data: dict[str, Any]) -> Inventory:
         multiple_backup_sets=multiple_backup_sets,
         status_line=_status_line(backup_sets),
         start_blocked_reason=_start_blocked_reason(unnamed_live, backup_sets),
+        system_disks=_system_disk_names(blockdevices),
     )
 
 
@@ -238,13 +248,53 @@ def _partition_from_node(node: dict[str, Any], disk_name: str) -> Partition:
     )
 
 
+def _node_mountpoints(node: dict[str, Any]) -> list[str]:
+    """Every mountpoint of one node, from both lsblk spellings.
+
+    MOUNTPOINT reports only the first mount, which hides the rest on layouts
+    like btrfs subvolumes where one device carries / and /home at once.
+    """
+    found = [node.get("mountpoint")]
+    found.extend(node.get("mountpoints") or [])
+    return [m for m in found if m]
+
+
 def _has_mountpoint(node: dict[str, Any], mount: str) -> bool:
-    if node.get("mountpoint") == mount:
+    if mount in _node_mountpoints(node):
         return True
     for child in node.get("children") or []:
         if _has_mountpoint(child, mount):
             return True
     return False
+
+
+def _is_system_mountpoint(mountpoint: str) -> bool:
+    if mountpoint == SWAP_MOUNTPOINT:
+        return True
+    if not mountpoint.startswith("/"):
+        return False
+    if mountpoint in _REMOVABLE_MOUNT_DIRS:
+        return False
+    return not mountpoint.startswith(tuple(d + "/" for d in _REMOVABLE_MOUNT_DIRS))
+
+
+def _system_disk_names(blockdevices: list[dict[str, Any]]) -> list[str]:
+    """Disks the running system is using, not just the one holding /.
+
+    A separate /boot/efi disk, a separate /home disk, an active swap disk and
+    every member of a multi-disk LVM or RAID root all belong here: erasing any
+    of them breaks the running system. lsblk repeats a spanning LV under each
+    of its physical disks, so walking each disk's own subtree finds them all.
+    """
+    names: list[str] = []
+    for dev in blockdevices:
+        if dev.get("type") != "disk":
+            continue
+        for node in _walk(dev):
+            if any(_is_system_mountpoint(m) for m in _node_mountpoints(node)):
+                names.append(dev["name"])
+                break
+    return names
 
 
 def _live_disk_name(blockdevices: list[dict[str, Any]]) -> str | None:

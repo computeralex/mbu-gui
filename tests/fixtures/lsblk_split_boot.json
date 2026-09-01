@@ -1,0 +1,84 @@
+{
+  "_comment": "root on nvme0n1, /boot/efi on a separate sda, sdb is a clean spare",
+  "blockdevices": [
+    {
+      "name": "nvme0n1",
+      "path": "/dev/nvme0n1",
+      "type": "disk",
+      "size": "512G",
+      "model": "WD Black",
+      "serial": "NVME9999SYSTEM",
+      "wwn": "0x5000cccc2222dddd",
+      "ptuuid": "44444444-4444",
+      "children": [
+        {
+          "name": "nvme0n1p1",
+          "path": "/dev/nvme0n1p1",
+          "type": "part",
+          "size": "512G",
+          "fstype": "ext4",
+          "mountpoint": "/",
+          "partlabel": "main-root",
+          "partn": 1,
+          "uuid": "BBBB"
+        }
+      ]
+    },
+    {
+      "name": "sda",
+      "path": "/dev/sda",
+      "type": "disk",
+      "size": "120G",
+      "model": "Old Boot SSD",
+      "serial": "SYS0000INTERNAL",
+      "wwn": "0x5000aaaa1111bbbb",
+      "ptuuid": "11111111-1111",
+      "children": [
+        {
+          "name": "sda1",
+          "path": "/dev/sda1",
+          "type": "part",
+          "size": "512M",
+          "fstype": "vfat",
+          "mountpoint": "/boot/efi",
+          "partlabel": "main-efi",
+          "partn": 1,
+          "uuid": "AAAA"
+        },
+        {
+          "name": "sda2",
+          "path": "/dev/sda2",
+          "type": "part",
+          "size": "119G",
+          "fstype": "swap",
+          "mountpoint": "[SWAP]",
+          "partlabel": "main-swap",
+          "partn": 2,
+          "uuid": "CCCC"
+        }
+      ]
+    },
+    {
+      "name": "sdb",
+      "path": "/dev/sdb",
+      "type": "disk",
+      "size": "500G",
+      "model": "Backup Drive",
+      "serial": "USB1111BACKUPB",
+      "ptuuid": "22222222-2222",
+      "children": [
+        {
+          "name": "sdb1",
+          "path": "/dev/sdb1",
+          "type": "part",
+          "size": "500G",
+          "fstype": "ext4",
+          "mountpoint": null,
+          "partlabel": "bak1-root",
+          "partn": 1,
+          "uuid": "DDDD"
+        }
+      ]
+    }
+  ]
+}

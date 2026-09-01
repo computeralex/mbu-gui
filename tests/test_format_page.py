@@ -153,6 +153,22 @@ def test_luks_live_disk_is_not_a_format_candidate():
     assert names == ["sdb"]
 
 
+def test_disk_holding_only_efi_and_swap_is_not_listed():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_split_boot.json").read_text())
+    p = FormatPage(inv)
+    names = [p.diskList.item(i).text().split()[0] for i in range(p.diskList.count())]
+    assert names == ["sdb"]
+
+
+def test_spanning_vg_members_are_not_listed():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_vg_spans_two_disks.json").read_text())
+    p = FormatPage(inv)
+    names = [p.diskList.item(i).text().split()[0] for i in range(p.diskList.count())]
+    assert names == ["sdc"]
+
+
 def test_no_root_mount_lists_no_format_candidates():
     app()
     inv = load_lsblk((FIXTURES / "lsblk_no_root.json").read_text())

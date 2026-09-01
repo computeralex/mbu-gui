@@ -63,6 +63,30 @@ def test_format_disk_refuses_when_live_unknown(tmp_path, capsys):
     assert "contains /" in capsys.readouterr().out
 
 
+def test_format_disk_refuses_disk_holding_efi_and_swap(tmp_path, capsys):
+    """sda has no / on it, but it carries /boot/efi and active swap."""
+    calls = []
+    code = main(
+        ["format-disk", "--disk", "sda", "--disk-id", SDA_ID, "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_split_boot.json"),
+        run=lambda argv, **k: calls.append(list(argv)) or 0,
+    )
+    assert code == 2
+    assert "running system is using" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_format_disk_refuses_second_member_of_spanning_vg(tmp_path, capsys):
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", "wwn:0x5000aaaa1111cccc", "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_vg_spans_two_disks.json"),
+    )
+    assert code == 2
+    assert "running system is using" in capsys.readouterr().out
+
+
 def test_format_disk_refuses_luks_lvm_live_sda(tmp_path, capsys):
     code = main(
         ["format-disk", "--disk", "sda", "--disk-id", SDA_ID, "--pset", "bak9"],

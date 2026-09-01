@@ -3,6 +3,10 @@ from __future__ import annotations
 from mbu_gui.disks import Inventory, Partition, disks_with_id
 
 live_disk_error = "Refusing to format or wipe the disk that contains /"
+system_disk_error = (
+    "Refusing to format or wipe a disk the running system is using "
+    "(it holds a mounted filesystem or active swap)"
+)
 label_wrong_disk_error = "Refusing to label a partition that is not on the disk that contains /"
 missing_disk_id_error = (
     "Refusing to format a disk that reports no serial number or hardware id."
@@ -26,9 +30,17 @@ def normalize_disk(name: str) -> str:
     return name
 
 
-def assert_not_live_disk(disk: str, inventory: Inventory) -> None:
-    if inventory.live_disk is None or normalize_disk(disk) == inventory.live_disk:
+def assert_not_system_disk(disk: str, inventory: Inventory) -> None:
+    """Refuse any disk the running system depends on, not only the one with /.
+
+    Fails closed when / cannot be located at all: if we cannot tell what the
+    system is using, we must not erase anything.
+    """
+    name = normalize_disk(disk)
+    if inventory.live_disk is None or name == inventory.live_disk:
         raise ValueError(live_disk_error)
+    if name in inventory.system_disks:
+        raise ValueError(system_disk_error)
 
 
 def resolve_format_target(disk_id: str, expected_name: str, inventory: Inventory) -> str:

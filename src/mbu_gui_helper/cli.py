@@ -22,7 +22,7 @@ from mbu_gui_helper.commands import (
 from mbu_gui_helper.runner import run_streamed
 from mbu_gui_helper.safety import (
     assert_label_targets_live,
-    assert_not_live_disk,
+    assert_not_system_disk,
     resolve_format_target,
 )
 
@@ -188,7 +188,7 @@ def _dispatch(args, *, paths, env, lsblk_data, environ, run) -> int:
 
     if args.command == "format-disk":
         target = resolve_format_target(args.disk_id, args.disk, inventory)
-        assert_not_live_disk(target, inventory)
+        assert_not_system_disk(target, inventory)
         tablefile = format_table_path(paths)
         table_code = invoke(format_table_argv())
         format_code = 0
