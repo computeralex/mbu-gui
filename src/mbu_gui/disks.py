@@ -184,6 +184,59 @@ def describe_backup_route(inventory: Inventory) -> str | None:
     )
 
 
+@dataclass(frozen=True)
+class NextStep:
+    """The one thing the user should do next, and why.
+
+    The home screen used to show a disabled Start Backup plus a separate
+    sentence explaining the block, which is easy to miss: the user sees a dead
+    button and concludes the app is broken. Instead the primary button always
+    offers the next action that actually moves them forward.
+    """
+
+    action: str
+    label: str
+    detail: str
+    enabled: bool = True
+
+
+_SETUP_DETAIL = (
+    "First this computer's partitions need MBU names. This only names them; "
+    "nothing is erased."
+)
+_FORMAT_DETAIL = (
+    "No backup disk is connected. Plug in the disk you already prepared, or "
+    "prepare a new one. If you just prepared a disk, plug it back in and this "
+    "will change to Back up now."
+)
+
+
+def next_step(inventory: Inventory) -> NextStep:
+    if inventory.unnamed_live:
+        return NextStep("setup", "Set up this computer", _SETUP_DETAIL)
+    if not inventory.backup_sets:
+        return NextStep("format", "Prepare a backup disk", _FORMAT_DETAIL)
+    if len(inventory.backup_sets) > 1:
+        return NextStep(
+            "blocked", "Back up now", _MULTIPLE_BACKUP_REASON, enabled=False
+        )
+    if inventory.start_blocked_reason is not None:
+        # Something outside the disk layout is blocking, such as the guard that
+        # fires when we booted from a clone. Never offer a way past that.
+        return NextStep(
+            "blocked", "Back up now", inventory.start_blocked_reason, enabled=False
+        )
+    route = describe_backup_route(inventory)
+    if route is None:
+        return NextStep(
+            "blocked",
+            "Back up now",
+            "Cannot tell which disk would be written to.",
+            enabled=False,
+        )
+    return NextStep("backup", "Back up now", route)
+
+
 def disks_with_id(inventory: Inventory, disk_id: str) -> list[Disk]:
     wanted = disk_id.strip().lower()
     if not wanted:

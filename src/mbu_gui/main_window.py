@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 
 from mbu_gui.backup_dialog import UNKNOWN_DESTINATION_TEXT, BackupDialog
 from mbu_gui.browse_page import BrowsePage, UNMOUNT_FAIL_TEXT
-from mbu_gui.disks import Inventory, describe_backup_route
+from mbu_gui.disks import Inventory, describe_backup_route, next_step
 from mbu_gui.format_page import FormatPage
 from mbu_gui.helper_client import explain_helper_failure, pkexec_argv, which_helper
 from mbu_gui.logs import LastRun, current_file_from_line, last_run_label
@@ -130,18 +130,20 @@ class MainWindow(QMainWindow):
         self.lastRunLabel.setObjectName("lastRunLabel")
         layout.addWidget(self.lastRunLabel)
 
-        self.startButton = QPushButton("Start Backup")
+        self._next_step = next_step(inventory)
+
+        self.startButton = QPushButton(self._next_step.label)
         self.startButton.setObjectName("startButton")
         start_font = QFont(self.startButton.font())
         start_font.setPointSize(start_font.pointSize() + 4)
         start_font.setBold(True)
         self.startButton.setFont(start_font)
         self.startButton.setMinimumHeight(48)
-        self.startButton.setEnabled(inventory.start_blocked_reason is None)
+        self.startButton.setEnabled(self._next_step.enabled)
         self.startButton.clicked.connect(self.on_start_clicked)
         layout.addWidget(self.startButton)
 
-        self.startReasonLabel = QLabel(inventory.start_blocked_reason or "")
+        self.startReasonLabel = QLabel(self._next_step.detail)
         self.startReasonLabel.setObjectName("startReasonLabel")
         self.startReasonLabel.setWordWrap(True)
         layout.addWidget(self.startReasonLabel)
@@ -276,12 +278,17 @@ class MainWindow(QMainWindow):
         if current == PAGE_BROWSE:
             self.stack.setCurrentIndex(PAGE_BROWSE)
 
+    def _sync_next_step(self) -> None:
+        self._next_step = next_step(self.inventory)
+        self.startButton.setText(self._next_step.label)
+        self.startReasonLabel.setText(self._next_step.detail)
+        if not self._running:
+            self.startButton.setEnabled(self._next_step.enabled)
+
     def _apply_inventory(self, inventory: Inventory) -> None:
         self.inventory = inventory
         self.statusLabel.setText(inventory.status_line)
-        self.startReasonLabel.setText(inventory.start_blocked_reason or "")
-        if not self._running:
-            self.startButton.setEnabled(inventory.start_blocked_reason is None)
+        self._sync_next_step()
         self._replace_setup_page(inventory)
         self._replace_format_page(inventory)
         self._replace_browse_page(inventory)
@@ -359,7 +366,7 @@ class MainWindow(QMainWindow):
     def show_error(self, message: str) -> None:
         self.append_log(message)
         if not self._running:
-            self.startButton.setEnabled(self.inventory.start_blocked_reason is None)
+            self.startButton.setEnabled(self._next_step.enabled)
 
     def set_running(self, running: bool) -> None:
         self._running = running
@@ -378,7 +385,7 @@ class MainWindow(QMainWindow):
             self.browsePage.unmountButton.setEnabled(False)
             self.browsePage.leaveButton.setEnabled(False)
         else:
-            self.startButton.setEnabled(self.inventory.start_blocked_reason is None)
+            self.startButton.setEnabled(self._next_step.enabled)
             self.setupPage.leaveButton.setEnabled(True)
             self.setupPage._sync_enabled()
             self.formatPage.leaveButton.setEnabled(True)
@@ -386,7 +393,16 @@ class MainWindow(QMainWindow):
             self.browsePage._sync_enabled()
 
     def on_start_clicked(self) -> None:
-        if self.inventory.start_blocked_reason or self._running:
+        if self._running:
+            return
+        action = self._next_step.action
+        if action == "setup":
+            self.stack.setCurrentIndex(PAGE_SETUP)
+            return
+        if action == "format":
+            self.stack.setCurrentIndex(PAGE_FORMAT)
+            return
+        if action != "backup":
             return
         dialog = BackupDialog(self.inventory, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -632,7 +648,11 @@ class MainWindow(QMainWindow):
                 "-bootfix," + ",".join(self.inventory.live_functions)
             )
             return
-        self.show_unplug(True)
+        # Formatting runs bare mkfs, so the new filesystems get fresh random
+        # UUIDs and nothing is cloned yet. Telling the user to unplug here is
+        # both untrue and the opposite of what they need to do next, which is
+        # to back up onto the disk they just prepared.
+        self._clear_unplug()
         self.stack.setCurrentIndex(PAGE_HOME)
 
     def on_mount_finished(self, code: int, stderr: str = "") -> None:

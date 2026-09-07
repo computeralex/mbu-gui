@@ -289,7 +289,8 @@ def test_format_success_skip_unplug_and_home():
     w.formatPage.formatButton.click()
     w.on_format_finished(0)
     assert w.stack.currentIndex() == PAGE_HOME
-    assert not w.unplugBanner.isHidden()
+    # A format clones no UUIDs, so there is nothing to unplug for yet.
+    assert w.unplugBanner.isHidden()
     assert len(captured) == 1
     assert "format-disk" in captured[0]
 

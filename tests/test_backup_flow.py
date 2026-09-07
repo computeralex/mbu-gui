@@ -72,6 +72,12 @@ def test_accepted_dialog_without_route_does_not_start_backup(monkeypatch):
     monkeypatch.setattr(
         main_window.BackupDialog, "exec", lambda self: QDialog.DialogCode.Accepted
     )
+    # Clicking cannot reach this state any more: with no backup set the primary
+    # button offers Prepare a backup disk instead. Drive the backup action
+    # directly so the last-ditch guard inside on_start_clicked stays covered.
+    from mbu_gui.disks import NextStep
+
+    w._next_step = NextStep("backup", "Back up now", "")
     w.on_start_clicked()
     assert calls == []
     assert "Cannot tell which disk" in w.logView.toPlainText()

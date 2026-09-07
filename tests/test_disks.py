@@ -248,6 +248,44 @@ def test_disks_with_id_lookup():
     assert disks_with_id(inv, "") == []
 
 
+def test_next_step_offers_the_action_that_unblocks_each_state():
+    from mbu_gui.disks import next_step
+
+    unnamed = _load("lsblk_unnamed.json")
+    assert next_step(unnamed).action == "setup"
+    assert next_step(unnamed).enabled
+
+    ready = _load("lsblk_named.json")
+    assert next_step(ready).action == "backup"
+    assert next_step(ready).enabled
+    assert "bak1" in next_step(ready).detail
+
+    no_disk = replace(ready, backup_sets=[])
+    assert next_step(no_disk).action == "format"
+    assert next_step(no_disk).enabled
+
+    several = _load("lsblk_two_backups.json")
+    assert next_step(several).action == "blocked"
+    assert not next_step(several).enabled
+
+
+def test_next_step_never_offers_a_way_past_the_clone_guard():
+    """Booting from a clone must not produce a clickable primary button.
+
+    The guard is the only thing standing between a booted clone and rsync
+    running backwards over the real system disk, so an inventory carrying an
+    unexplained block has to stay disabled rather than fall through to backup.
+    """
+    from mbu_gui.disks import next_step
+
+    ready = _load("lsblk_named.json")
+    guarded = replace(ready, start_blocked_reason="This computer is recorded as set `main`")
+    step = next_step(guarded)
+    assert step.action == "blocked"
+    assert not step.enabled
+    assert "recorded as set" in step.detail
+
+
 def test_luks_lvm_root_marks_sda_live_and_not_a_format_candidate():
     inv = _load("lsblk_luks_lvm.json")
     assert inv.live_disk == "sda"

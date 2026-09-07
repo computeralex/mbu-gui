@@ -29,16 +29,46 @@ def test_window_opens_with_backup_ready():
     assert w.statusLabel.text() == "Backup disk `bak1` is connected"
     assert w.lastRunLabel.text() == "No backup yet"
     assert w.startButton.isEnabled()
-    assert w.startReasonLabel.text() == ""
+    assert w.startButton.text() == "Back up now"
+    # The primary button always states what it is about to write to.
+    assert "bak1" in w.startReasonLabel.text()
     assert w.unplugBanner.isHidden()
 
 
-def test_start_disabled_when_unnamed():
+def test_unnamed_computer_offers_setup_instead_of_a_dead_button():
+    """An unprepared computer must get a live button, not a greyed-out one.
+
+    A disabled Start Backup with the explanation in a separate label reads as
+    a broken app; the button itself now offers the step that unblocks it.
+    """
     app()
     inv = load_lsblk((FIXTURES / "lsblk_unnamed.json").read_text())
     w = MainWindow(inventory=inv, last_run=None)
-    assert not w.startButton.isEnabled()
-    assert "Set up this computer" in w.startReasonLabel.text()
+    assert w.startButton.isEnabled()
+    assert w.startButton.text() == "Set up this computer"
+    assert "nothing is erased" in w.startReasonLabel.text()
+    w.startButton.click()
+    assert w.stack.currentIndex() == PAGE_SETUP
+
+
+def test_missing_backup_disk_offers_prepare_and_says_to_replug():
+    """The dead end that made the app look broken after a reboot.
+
+    Preparing a disk and then unplugging it left Start Backup greyed with the
+    reason easy to miss, so the button now offers the way out and the text
+    names replugging as the fix.
+    """
+    app()
+    from dataclasses import replace
+
+    named = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    inv = replace(named, backup_sets=[], start_blocked_reason="Plug in the backup disk")
+    w = MainWindow(inventory=inv, last_run=None)
+    assert w.startButton.isEnabled()
+    assert w.startButton.text() == "Prepare a backup disk"
+    assert "plug in the disk you already prepared" in w.startReasonLabel.text().lower()
+    w.startButton.click()
+    assert w.stack.currentIndex() == PAGE_FORMAT
 
 
 def test_error_and_unplug_and_busy():
