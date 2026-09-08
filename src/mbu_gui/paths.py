@@ -26,6 +26,7 @@ class MbuPaths:
     backup_latest_log: Path
     format_latest_log: Path
     incomplete_marker: Path
+    run_record: Path
 
 
 def _default_mbu_dir(environ: Mapping[str, str]) -> Path:
@@ -62,4 +63,8 @@ def resolve_paths(
         # a crash or a killed GUI still leaves evidence that MBU may have
         # already cloned filesystem UUIDs onto the backup disk.
         incomplete_marker=state_dir / "backup-incomplete",
+        # Which process group is doing the copying. The GUI runs as the user and
+        # cannot signal root's rsync, so cancelling has to go back through the
+        # helper, and the helper needs to know what it is allowed to stop.
+        run_record=state_dir / "backup-run.json",
     )

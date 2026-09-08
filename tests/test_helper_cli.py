@@ -2,6 +2,8 @@ from pathlib import Path
 import json
 import os
 
+import pytest
+
 from mbu_gui_helper.cli import main
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -303,6 +305,65 @@ def test_label_live_records_the_chosen_set(tmp_path):
     assert code == 0
     record = json.loads((state / "machine.json").read_text())
     assert record["machine_set"] == "newname"
+
+
+def test_backup_records_the_group_to_stop_and_clears_it_after(tmp_path):
+    state = _state(tmp_path)
+    record = state / "backup-run.json"
+    seen = {}
+
+    def run(argv, **kw):
+        on_start = kw.get("on_start")
+        if on_start is not None:
+            on_start(31337)
+            seen["while_running"] = json.loads(record.read_text())
+        return 0
+
+    code = main(
+        ["backup", "--fselection", "efi,root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=run,
+        state_dir=state,
+    )
+    assert code == 0
+    assert seen["while_running"]["pgid"] == 31337
+    # A record left behind is a pid waiting to be reused by something else.
+    assert not record.exists()
+
+
+def test_a_crashed_backup_still_clears_the_group_record(tmp_path):
+    state = _state(tmp_path)
+    record = state / "backup-run.json"
+
+    def run(argv, **kw):
+        on_start = kw.get("on_start")
+        if on_start is None:
+            return 0
+        on_start(4242)
+        raise OSError("mbup died")
+
+    with pytest.raises(OSError):
+        main(
+            ["backup", "--fselection", "efi"],
+            environ=_env(tmp_path),
+            lsblk_data=_lsblk(),
+            run=run,
+            state_dir=state,
+        )
+    assert not record.exists()
+
+
+def test_cancel_with_nothing_running_reports_instead_of_signalling(tmp_path, capsys):
+    code = main(
+        ["cancel"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda *a, **k: 0,
+        state_dir=_state(tmp_path),
+    )
+    assert code == 3
+    assert "No backup is running" in capsys.readouterr().out
 
 
 def test_label_live_refreshes_what_the_kernel_reports(tmp_path):

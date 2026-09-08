@@ -214,6 +214,67 @@ def test_a_failed_backup_does_not_leave_a_progress_bar_claiming_success():
     assert w.progressBar.isHidden()
 
 
+def test_stopping_asks_first_and_goes_through_the_helper():
+    """The GUI runs as the user and cannot signal root's rsync itself.
+
+    Killing the pkexec child would leave the copying running with the window
+    claiming it had stopped, so the request has to go back through the helper.
+    """
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    sent = []
+    w = _runnable_window(inv)
+    w.ask_cancel = lambda: True
+    w.start_cancel = sent.append
+    w._run_backup_with_fselection("efi,root")
+    assert not w.cancelButton.isHidden()
+    w.cancelButton.click()
+    assert len(sent) == 1
+    assert sent[0][-1] == "cancel"
+    assert not w.cancelButton.isEnabled()
+
+
+def test_saying_let_it_finish_does_not_stop_anything():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    sent = []
+    w = _runnable_window(inv)
+    w.ask_cancel = lambda: False
+    w.start_cancel = sent.append
+    w._run_backup_with_fselection("efi,root")
+    w.cancelButton.click()
+    assert sent == []
+    assert w.cancelButton.isEnabled()
+
+
+def test_stopping_twice_only_asks_the_helper_once():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    sent = []
+    w = _runnable_window(inv)
+    w.ask_cancel = lambda: True
+    w.start_cancel = sent.append
+    w._run_backup_with_fselection("efi,root")
+    w.on_cancel_clicked()
+    w.on_cancel_clicked()
+    assert len(sent) == 1
+
+
+def test_a_stopped_backup_still_says_to_unplug_the_disk():
+    """Stopping does not un-clone the UUIDs MBU has already written."""
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = _runnable_window(inv)
+    w.ask_cancel = lambda: True
+    w.start_cancel = lambda argv: None
+    w._run_backup_with_fselection("efi,root")
+    w.cancelButton.click()
+    w.on_helper_finished(143, "terminated")
+    assert not w.unplugBanner.isHidden()
+    assert w._backup_unfinished
+    assert w.cancelButton.isHidden()
+
+
 def test_error_and_unplug_and_busy():
     app()
     inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
@@ -250,15 +311,17 @@ def test_icon_candidates_include_installed_and_repo_paths():
 
 
 def test_close_ignored_while_running():
+    """The red X used to do nothing at all, with no hint why."""
     app()
     inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
-    w = MainWindow(inventory=inv, last_run=None)
+    w = MainWindow(inventory=inv, last_run=None, ask_cancel=lambda: False)
     w.show()
     w.set_running(True)
     event = QCloseEvent()
     w.closeEvent(event)
     assert not event.isAccepted()
     assert w.isVisible()
+    assert "would not stop it" in w.logView.toPlainText()
 
 
 def test_close_refused_while_browse_mounted():

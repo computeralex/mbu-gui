@@ -30,6 +30,7 @@ from mbu_gui_helper.commands import (
     sfdisk_label_argv,
     udev_settle_argv,
 )
+from mbu_gui_helper.cancel import cancel_run, clear_run, record_run
 from mbu_gui_helper.runner import run_streamed
 from mbu_gui_helper.safety import (
     assert_label_targets_live,
@@ -71,6 +72,7 @@ def _build_parser() -> ArgumentParser:
     backup.add_argument("--fselection", required=True)
 
     sub.add_parser("clean")
+    sub.add_parser("cancel")
 
     mount = sub.add_parser("mount")
     mount.add_argument("--set", required=True, dest="set_name")
@@ -220,8 +222,11 @@ def main(
 def _dispatch(args, *, paths, env, lsblk_data, environ, run) -> int:
     stdout = sys.stdout
 
-    def invoke(argv: list[str]) -> int:
-        return run(argv, cwd=paths.mbu_dir, env=env, stdout=stdout)
+    def invoke(argv: list[str], *, cancellable: bool = False) -> int:
+        on_start = None
+        if cancellable:
+            on_start = lambda pgid: record_run(paths.run_record, pgid)  # noqa: E731
+        return run(argv, cwd=paths.mbu_dir, env=env, stdout=stdout, on_start=on_start)
 
     inventory = _load_inventory(lsblk_data, environ)
 
@@ -229,10 +234,22 @@ def _dispatch(args, *, paths, env, lsblk_data, environ, run) -> int:
         clean = invoke(mbuclean_argv())
         return primary if primary != 0 else clean
 
+    if args.command == "cancel":
+        message = cancel_run(paths.run_record)
+        if message is not None:
+            print(message)
+            return 3
+        return 0
+
     if args.command == "backup":
         assert_not_running_from_backup(paths, inventory)
         mark_backup_started(paths)
-        code = then_clean(invoke(mbup_argv(args.fselection)))
+        try:
+            code = then_clean(invoke(mbup_argv(args.fselection), cancellable=True))
+        finally:
+            # Nothing is cancellable once the copying has stopped, and a stale
+            # record is a pid waiting to be reused by something unrelated.
+            clear_run(paths.run_record)
         if code == 0:
             paths.incomplete_marker.unlink(missing_ok=True)
         return code

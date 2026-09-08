@@ -61,6 +61,25 @@ PAGE_FORMAT = 2
 PAGE_BROWSE = 3
 
 CLOSE_MOUNTED_TEXT = "Unmount the backup before closing."
+# Not "data may be lost": this computer is never written to. What is at stake is
+# the backup already on the destination disk, which MBU overwrites in place as
+# it copies, so a half-finished run has damaged it without replacing it.
+CANCEL_CONFIRM_TITLE = "Stop the backup?"
+CANCEL_CONFIRM_TEXT = (
+    "Nothing on this computer is changed by stopping.\n\n"
+    "The backup disk is another matter. MBU copies over the previous backup as "
+    "it goes, so that older backup is already part way overwritten and will not "
+    "be bootable. Stopping now leaves the disk with neither a finished new "
+    "backup nor a usable old one, and you will need to run a full backup again."
+)
+CANCEL_YES_TEXT = "Stop the backup"
+CANCEL_NO_TEXT = "Let it finish"
+CLOSE_RUNNING_TEXT = (
+    "A backup is running. Closing the window would not stop it, because the "
+    "copying runs with administrator rights outside this window.\n\n"
+    "Stop the backup first, or let it finish."
+)
+CANCEL_REQUESTED_TEXT = "Stopping the backup..."
 SETUP_DONE_TEXT = (
     "This computer is named and ready. Next: prepare a backup disk, which "
     "erases a spare disk and sets it up to receive backups."
@@ -109,6 +128,8 @@ class MainWindow(QMainWindow):
         reload_inventory: Callable[[], Inventory] | None = None,
         reload_last_run: Callable[[], LastRun | None] | None = None,
         ask_copy_now: Callable[[], bool] | None = None,
+        ask_cancel: Callable[[], bool] | None = None,
+        start_cancel: Callable[[list[str]], None] | None = None,
         open_dir: Callable[[str], None] | None = None,
         backup_unfinished: bool = False,
         parent=None,
@@ -123,6 +144,10 @@ class MainWindow(QMainWindow):
         self.reload_inventory = reload_inventory
         self.reload_last_run = reload_last_run
         self.ask_copy_now = ask_copy_now
+        self.ask_cancel = ask_cancel
+        self.start_cancel = start_cancel
+        self._cancel_process: LineProcess | None = None
+        self._cancelling = False
         self.open_dir = open_dir
         self._running = False
         self._helper_output: list[str] = []
@@ -203,10 +228,17 @@ class MainWindow(QMainWindow):
         secondary.addWidget(self.browseButton)
         layout.addLayout(secondary)
 
+        progress_row = QHBoxLayout()
         self.progressBar = QProgressBar()
         self.progressBar.setObjectName("progressBar")
         self.progressBar.setTextVisible(True)
+        self.cancelButton = QPushButton("Stop")
+        self.cancelButton.setObjectName("cancelButton")
+        self.cancelButton.clicked.connect(self.on_cancel_clicked)
+        progress_row.addWidget(self.progressBar, 1)
+        progress_row.addWidget(self.cancelButton)
         self.progressBar.hide()
+        self.cancelButton.hide()
 
         self.currentFileLabel = QLabel("")
         self.currentFileLabel.setObjectName("currentFileLabel")
@@ -262,7 +294,7 @@ class MainWindow(QMainWindow):
         root = QWidget()
         root_layout = QVBoxLayout(root)
         root_layout.addWidget(self.stack, 1)
-        root_layout.addWidget(self.progressBar)
+        root_layout.addLayout(progress_row)
         root_layout.addWidget(self.currentFileLabel)
         root_layout.addWidget(self.logView)
         root_layout.addWidget(self.unplugBanner)
@@ -414,8 +446,52 @@ class MainWindow(QMainWindow):
             noun=_HELPER_NOUNS.get(self._helper_kind, "backup"),
         )
 
+    def on_cancel_clicked(self) -> None:
+        if not self._running or self._cancelling:
+            return
+        if not self._confirm_cancel():
+            return
+        self._cancelling = True
+        self.cancelButton.setEnabled(False)
+        self.progressBar.setFormat(CANCEL_REQUESTED_TEXT)
+        self.append_log(CANCEL_REQUESTED_TEXT)
+        self._send_cancel()
+
+    def _confirm_cancel(self) -> bool:
+        if self.ask_cancel is not None:
+            return self.ask_cancel()
+        box = QMessageBox(self)
+        box.setObjectName("cancelConfirm")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(CANCEL_CONFIRM_TITLE)
+        box.setText(CANCEL_CONFIRM_TEXT)
+        stop = box.addButton(CANCEL_YES_TEXT, QMessageBox.ButtonRole.DestructiveRole)
+        keep = box.addButton(CANCEL_NO_TEXT, QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(keep)
+        box.exec()
+        return box.clickedButton() is stop
+
+    def _send_cancel(self) -> None:
+        helper = self.helper_path if self.helper_path is not None else which_helper()
+        if helper is None or not self.helper_exists or not self.pkexec_exists:
+            self.show_error(self._missing_helper_message(helper is not None))
+            return
+        argv = pkexec_argv(helper, ["cancel"])
+        if self.start_cancel is not None:
+            self.start_cancel(argv)
+            return
+        proc = LineProcess(self)
+        self._cancel_process = proc
+        proc.line.connect(self.append_log)
+        proc.start(argv)
+
     def closeEvent(self, event) -> None:
         if self._running:
+            # Closing the window does not stop root's rsync, so pretending it
+            # does would be worse than refusing. Say what is actually running.
+            self.show_error(CLOSE_RUNNING_TEXT)
+            if not self._cancelling:
+                self.on_cancel_clicked()
             event.ignore()
             return
         if self.browsePage.mounted:
@@ -460,8 +536,12 @@ class MainWindow(QMainWindow):
         self.progressBar.setValue(0)
         self.progressBar.setFormat("Starting")
         self.progressBar.show()
+        self._cancelling = False
+        self.cancelButton.setEnabled(True)
+        self.cancelButton.show()
 
     def _finish_progress(self, ok: bool) -> None:
+        self.cancelButton.hide()
         if not ok:
             self.progressBar.hide()
             return
