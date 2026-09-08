@@ -31,6 +31,17 @@ _MOUNT_FUNCTIONS = {
     "/tmp": "tmp",
 }
 
+GPT_PTTYPE = "gpt"
+
+_MBR_LIVE_REASON = (
+    "This computer's disk uses an old MBR partition table. MBR partitions "
+    "cannot hold names, and MBU identifies partitions by name, so the names "
+    "would be silently dropped and this screen would keep asking you to set "
+    "up the computer. MBU needs a disk partitioned as GPT, with an EFI "
+    "partition, which normally means a UEFI installation."
+)
+_MBR_STATUS = "This disk uses MBR, which MBU cannot use"
+
 _UNNAMED_LIVE_REASON = (
     "This computer's partitions are not named for MBU yet. Use Set up this computer."
 )
@@ -64,6 +75,7 @@ class Disk:
     serial: str | None = None
     wwn: str | None = None
     ptuuid: str | None = None
+    pttype: str | None = None
 
     @property
     def disk_id(self) -> str | None:
@@ -91,6 +103,7 @@ class Inventory:
     status_line: str
     start_blocked_reason: str | None
     system_disks: list[str] = field(default_factory=list)
+    live_pttype: str | None = None
 
     @classmethod
     def empty(cls, reason: str) -> Inventory:
@@ -105,6 +118,7 @@ class Inventory:
             status_line="Could not read disks",
             start_blocked_reason=reason,
             system_disks=[],
+            live_pttype=None,
         )
 
 
@@ -249,6 +263,9 @@ def setup_block_reason(
     none were shown, so the default name on an already-named machine produced a
     dead button with no explanation.
     """
+    unsupported = live_disk_unsupported(inventory)
+    if unsupported is not None:
+        return unsupported
     if not name:
         return "Give this computer's partitions a set name."
     if not is_valid_set_name(name):
@@ -336,6 +353,10 @@ _FORMAT_DETAIL = (
 
 
 def next_step(inventory: Inventory) -> NextStep:
+    unsupported = live_disk_unsupported(inventory)
+    if unsupported is not None:
+        # Nothing the user can do from inside the app, so offer no action.
+        return NextStep("blocked", "Back up now", unsupported, enabled=False)
     if inventory.unnamed_live:
         return NextStep("setup", "Set up this computer", _SETUP_DETAIL)
     if not inventory.backup_sets:
@@ -395,6 +416,7 @@ def parse_lsblk(data: dict[str, Any]) -> Inventory:
     live_functions = _live_functions(disks, live_disk, live_set)
     backup_sets = _backup_sets(disks, live_set)
     multiple_backup_sets = len(backup_sets) > 1
+    live_pttype = _live_pttype(disks, live_disk)
     return Inventory(
         disks=disks,
         live_disk=live_disk,
@@ -403,9 +425,12 @@ def parse_lsblk(data: dict[str, Any]) -> Inventory:
         live_functions=live_functions,
         unnamed_live=unnamed_live,
         multiple_backup_sets=multiple_backup_sets,
-        status_line=_status_line(backup_sets),
-        start_blocked_reason=_start_blocked_reason(unnamed_live, backup_sets),
+        status_line=_status_line(backup_sets, live_pttype),
+        start_blocked_reason=_start_blocked_reason(
+            unnamed_live, backup_sets, live_pttype
+        ),
         system_disks=_system_disk_names(blockdevices),
+        live_pttype=live_pttype,
     )
 
 
@@ -425,6 +450,7 @@ def _disks_from_blockdevices(blockdevices: list[dict[str, Any]]) -> list[Disk]:
                 serial=dev.get("serial"),
                 wwn=dev.get("wwn"),
                 ptuuid=dev.get("ptuuid"),
+                pttype=dev.get("pttype"),
             )
         )
     return disks
@@ -568,7 +594,29 @@ def _backup_sets(disks: list[Disk], live_set: str | None) -> list[str]:
     return sorted(names)
 
 
-def _status_line(backup_sets: list[str]) -> str:
+def _live_pttype(disks: list[Disk], live_disk: str | None) -> str | None:
+    for disk in disks:
+        if disk.name == live_disk:
+            return (disk.pttype or "").lower() or None
+    return None
+
+
+def live_disk_unsupported(inventory: Inventory) -> str | None:
+    """Why this computer cannot be backed up at all, if it cannot.
+
+    An MBR disk has no place to store a partition name, so labelling appears to
+    succeed and then vanishes. Detecting it here turns a silent loop through
+    Set up this computer into one sentence explaining that the disk is wrong.
+    """
+    pttype = inventory.live_pttype
+    if pttype is None or pttype == GPT_PTTYPE:
+        return None
+    return _MBR_LIVE_REASON
+
+
+def _status_line(backup_sets: list[str], live_pttype: str | None = None) -> str:
+    if live_pttype is not None and live_pttype != GPT_PTTYPE:
+        return _MBR_STATUS
     if not backup_sets:
         return _NO_BACKUP_REASON
     if len(backup_sets) > 1:
@@ -576,7 +624,15 @@ def _status_line(backup_sets: list[str]) -> str:
     return f"Backup disk `{backup_sets[0]}` is connected"
 
 
-def _start_blocked_reason(unnamed_live: bool, backup_sets: list[str]) -> str | None:
+def _start_blocked_reason(
+    unnamed_live: bool,
+    backup_sets: list[str],
+    live_pttype: str | None = None,
+) -> str | None:
+    # Checked before the unnamed case: an MBR disk always looks unnamed, and
+    # sending the user to Set up this computer is exactly the dead end.
+    if live_pttype is not None and live_pttype != GPT_PTTYPE:
+        return _MBR_LIVE_REASON
     if unnamed_live:
         return _UNNAMED_LIVE_REASON
     if not backup_sets:

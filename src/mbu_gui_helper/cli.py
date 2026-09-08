@@ -31,6 +31,7 @@ from mbu_gui_helper.commands import (
 from mbu_gui_helper.runner import run_streamed
 from mbu_gui_helper.safety import (
     assert_label_targets_live,
+    assert_live_disk_supports_names,
     assert_not_system_disk,
     resolve_format_target,
 )
@@ -39,7 +40,8 @@ LSBLK_ARGV = [
     "lsblk",
     "-J",
     "-o",
-    "NAME,PATH,TYPE,SIZE,FSTYPE,MOUNTPOINT,PARTLABEL,PARTN,UUID,MODEL,SERIAL,WWN,PTUUID",
+    "NAME,PATH,TYPE,SIZE,FSTYPE,MOUNTPOINT,PARTLABEL,PARTN,UUID,MODEL,SERIAL,WWN,"
+    "PTUUID,PTTYPE",
 ]
 
 state_symlink_error = "Refusing to use a state path that is not a plain root-owned directory"
@@ -254,6 +256,7 @@ def _dispatch(args, *, paths, env, lsblk_data, environ, run) -> int:
         return then_clean(primary)
 
     if args.command == "label-live":
+        assert_live_disk_supports_names(inventory)
         planned = []
         for name, label in _parse_labels(args.labels):
             part = assert_label_targets_live(name, inventory)

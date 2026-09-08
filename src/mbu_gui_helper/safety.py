@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from mbu_gui.disks import Inventory, Partition, disks_with_id
+from mbu_gui.disks import (
+    Inventory,
+    Partition,
+    disks_with_id,
+    live_disk_unsupported,
+)
 
 live_disk_error = "Refusing to format or wipe the disk that contains /"
 system_disk_error = (
@@ -61,6 +66,18 @@ def resolve_format_target(disk_id: str, expected_name: str, inventory: Inventory
     if disk.name != normalize_disk(expected_name):
         raise ValueError(renamed_disk_error)
     return disk.name
+
+
+def assert_live_disk_supports_names(inventory: Inventory) -> None:
+    """Refuse to write partition names a table cannot store.
+
+    On an MBR disk sfdisk reports success, rewrites the table and drops the
+    name, so the GUI keeps asking the user to set up the computer forever.
+    Failing loudly here beats rewriting the live partition table to no effect.
+    """
+    unsupported = live_disk_unsupported(inventory)
+    if unsupported is not None:
+        raise ValueError(unsupported)
 
 
 def assert_label_targets_live(part_name: str, inventory: Inventory) -> Partition:

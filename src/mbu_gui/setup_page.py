@@ -65,10 +65,10 @@ class SetupPage(QWidget):
         self.setNameEdit.setObjectName("setNameEdit")
         layout.addWidget(self.setNameEdit)
 
-        layout.addWidget(QLabel("Type the set name to confirm"))
+        layout.addWidget(QLabel("Type the set name again to confirm"))
         self.confirmEdit = QLineEdit()
         self.confirmEdit.setObjectName("confirmEdit")
-        self.confirmEdit.setPlaceholderText("Type the set name to confirm")
+        self.confirmEdit.setPlaceholderText("Type the set name again to confirm")
         layout.addWidget(self.confirmEdit)
 
         self.previewTable = QTableWidget(0, len(PREVIEW_HEADERS))

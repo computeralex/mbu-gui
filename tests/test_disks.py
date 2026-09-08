@@ -269,6 +269,50 @@ def test_next_step_offers_the_action_that_unblocks_each_state():
     assert not next_step(several).enabled
 
 
+def test_mbr_live_disk_is_reported_instead_of_looping_through_setup():
+    """The dead end that made setup fail silently on every attempt.
+
+    MBR partitions have no name field, so sfdisk reports success, rewrites the
+    table and drops the name. The disk then still looks unnamed, so the app
+    sent the user back to Set up this computer forever.
+    """
+    from mbu_gui.disks import live_disk_unsupported, next_step
+
+    inv = _load("lsblk_mbr_live.json")
+    assert inv.live_disk == "vda"
+    assert inv.live_pttype == "dos"
+
+    reason = live_disk_unsupported(inv)
+    assert reason is not None
+    assert "MBR" in reason
+    assert "GPT" in reason
+
+    # Must be reported ahead of the unnamed case, and offer no action.
+    assert inv.unnamed_live
+    step = next_step(inv)
+    assert step.action == "blocked"
+    assert not step.enabled
+    assert "MBR" in step.detail
+    assert "MBR" in (inv.start_blocked_reason or "")
+    assert "MBR" in inv.status_line
+
+
+def test_gpt_live_disk_is_not_reported_as_unsupported():
+    from mbu_gui.disks import live_disk_unsupported
+
+    assert live_disk_unsupported(_load("lsblk_named.json")) is None
+    # A fixture with no PTTYPE at all must not be treated as unsupported.
+    assert live_disk_unsupported(_load("lsblk_unnamed.json")) is None
+
+
+def test_setup_page_refuses_an_mbr_disk():
+    from mbu_gui.disks import setup_block_reason
+
+    inv = _load("lsblk_mbr_live.json")
+    reason = setup_block_reason(inv, "main", "main")
+    assert reason is not None and "MBR" in reason
+
+
 def test_next_step_never_offers_a_way_past_the_clone_guard():
     """Booting from a clone must not produce a clickable primary button.
 

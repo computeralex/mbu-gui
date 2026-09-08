@@ -1,0 +1,64 @@
+{
+  "blockdevices": [
+    {
+      "name": "vda",
+      "path": "/dev/vda",
+      "type": "disk",
+      "size": "40G",
+      "fstype": null,
+      "mountpoint": null,
+      "partlabel": null,
+      "partn": null,
+      "uuid": null,
+      "model": null,
+      "serial": "VIRTIO0001",
+      "wwn": null,
+      "ptuuid": "abcd1234",
+      "pttype": "dos",
+      "children": [
+        {
+          "name": "vda1",
+          "path": "/dev/vda1",
+          "type": "part",
+          "size": "40G",
+          "fstype": "ext4",
+          "mountpoint": "/",
+          "mountpoints": ["/"],
+          "partlabel": null,
+          "partn": 1,
+          "uuid": "11111111-aaaa-bbbb-cccc-222222222222"
+        }
+      ]
+    },
+    {
+      "name": "vdb",
+      "path": "/dev/vdb",
+      "type": "disk",
+      "size": "40G",
+      "fstype": null,
+      "mountpoint": null,
+      "partlabel": null,
+      "partn": null,
+      "uuid": null,
+      "model": null,
+      "serial": "VIRTIO0002",
+      "wwn": null,
+      "ptuuid": "533894ac-8c37",
+      "pttype": "gpt",
+      "children": [
+        {
+          "name": "vdb1",
+          "path": "/dev/vdb1",
+          "type": "part",
+          "size": "40G",
+          "fstype": "ext4",
+          "mountpoint": null,
+          "mountpoints": [],
+          "partlabel": "Linux filesystem",
+          "partn": 1,
+          "uuid": "33333333-aaaa-bbbb-cccc-444444444444"
+        }
+      ]
+    }
+  ]
+}
