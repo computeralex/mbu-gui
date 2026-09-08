@@ -20,7 +20,12 @@ from PySide6.QtWidgets import (
 
 from mbu_gui.backup_dialog import UNKNOWN_DESTINATION_TEXT, BackupDialog
 from mbu_gui.browse_page import BrowsePage, UNMOUNT_FAIL_TEXT
-from mbu_gui.disks import Inventory, describe_backup_route, next_step
+from mbu_gui.disks import (
+    Inventory,
+    describe_backup_route,
+    live_disk_unsupported,
+    next_step,
+)
 from mbu_gui.format_page import FormatPage
 from mbu_gui.helper_client import explain_helper_failure, pkexec_argv, which_helper
 from mbu_gui.logs import LastRun, current_file_from_line, last_run_label
@@ -105,6 +110,7 @@ class MainWindow(QMainWindow):
         self._helper_kind = "backup"
         self._line_process: LineProcess | None = None
         self._backup_unfinished = backup_unfinished
+        self._live_disk_usable = live_disk_unsupported(inventory) is None
 
         self.setWindowTitle("MBU Backup")
         icon = _icon_path()
@@ -142,6 +148,16 @@ class MainWindow(QMainWindow):
         self.startButton.setEnabled(self._next_step.enabled)
         self.startButton.clicked.connect(self.on_start_clicked)
         layout.addWidget(self.startButton)
+
+        self.blockedHeadlineLabel = QLabel("")
+        self.blockedHeadlineLabel.setObjectName("blockedHeadlineLabel")
+        self.blockedHeadlineLabel.setWordWrap(True)
+        headline_font = QFont(self.blockedHeadlineLabel.font())
+        headline_font.setPointSize(headline_font.pointSize() + 3)
+        headline_font.setBold(True)
+        self.blockedHeadlineLabel.setFont(headline_font)
+        self.blockedHeadlineLabel.hide()
+        layout.addWidget(self.blockedHeadlineLabel)
 
         self.startReasonLabel = QLabel(self._next_step.detail)
         self.startReasonLabel.setObjectName("startReasonLabel")
@@ -211,6 +227,10 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
         self.resize(720, 560)
 
+        # One code path decides the primary button on first paint and on every
+        # refresh, so the opening screen cannot disagree with a later one.
+        self._sync_next_step()
+
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(2000)
         self._refresh_timer.timeout.connect(self._on_home_timer)
@@ -279,11 +299,24 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentIndex(PAGE_BROWSE)
 
     def _sync_next_step(self) -> None:
-        self._next_step = next_step(self.inventory)
-        self.startButton.setText(self._next_step.label)
-        self.startReasonLabel.setText(self._next_step.detail)
+        step = next_step(self.inventory)
+        self._next_step = step
+        self.startButton.setText(step.label)
+        self.startReasonLabel.setText(step.detail)
+        # A blocked state has no action behind it, so show the reason instead of
+        # a large dead button suggesting something that cannot be done.
+        blocked = step.action == "blocked"
+        self.startButton.setVisible(not blocked)
+        self.blockedHeadlineLabel.setText(step.headline)
+        self.blockedHeadlineLabel.setVisible(blocked and bool(step.headline))
+        # Naming and preparing are pointless when this computer can never be a
+        # source, and entering those pages was the loop the user got stuck in.
+        usable = live_disk_unsupported(self.inventory) is None
+        self._live_disk_usable = usable
         if not self._running:
-            self.startButton.setEnabled(self._next_step.enabled)
+            self.startButton.setEnabled(step.enabled)
+            self.setupButton.setEnabled(usable)
+            self.formatButton.setEnabled(usable)
 
     def _apply_inventory(self, inventory: Inventory) -> None:
         self.inventory = inventory
@@ -371,8 +404,8 @@ class MainWindow(QMainWindow):
     def set_running(self, running: bool) -> None:
         self._running = running
         idle = not running
-        self.setupButton.setEnabled(idle)
-        self.formatButton.setEnabled(idle)
+        self.setupButton.setEnabled(idle and self._live_disk_usable)
+        self.formatButton.setEnabled(idle and self._live_disk_usable)
         self.browseButton.setEnabled(idle)
         if running:
             self.startButton.setEnabled(False)

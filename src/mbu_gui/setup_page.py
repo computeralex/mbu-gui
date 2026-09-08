@@ -83,6 +83,12 @@ class SetupPage(QWidget):
         self.blockReasonLabel = QLabel("")
         self.blockReasonLabel.setObjectName("blockReasonLabel")
         self.blockReasonLabel.setWordWrap(True)
+        # A greyed-out button next to plain body text reads as a broken app, so
+        # make the explanation look like the answer to "why can't I continue?".
+        self.blockReasonLabel.setStyleSheet(
+            "background-color: #FCF3CF; color: #000000; padding: 8px;"
+        )
+        self.blockReasonLabel.hide()
         layout.addWidget(self.blockReasonLabel)
 
         buttons = QHBoxLayout()
@@ -129,6 +135,7 @@ class SetupPage(QWidget):
     def _sync_enabled(self) -> None:
         reason = self.block_reason()
         self.blockReasonLabel.setText(reason or "")
+        self.blockReasonLabel.setVisible(reason is not None)
         self.applyButton.setEnabled(reason is None)
 
     def labels_arg(self) -> str:

@@ -34,11 +34,11 @@ _MOUNT_FUNCTIONS = {
 GPT_PTTYPE = "gpt"
 
 _MBR_LIVE_REASON = (
-    "This computer's disk uses an old MBR partition table. MBR partitions "
-    "cannot hold names, and MBU identifies partitions by name, so the names "
-    "would be silently dropped and this screen would keep asking you to set "
-    "up the computer. MBU needs a disk partitioned as GPT, with an EFI "
-    "partition, which normally means a UEFI installation."
+    "This computer's disk uses an old MBR partition table, and MBU needs GPT "
+    "with an EFI partition. That normally means Linux was installed in legacy "
+    "BIOS mode rather than UEFI mode.\n\n"
+    "Nothing in this app can change that. Reinstalling Linux in UEFI mode is "
+    "the only way to make this computer work with MBU."
 )
 _MBR_STATUS = "This disk uses MBR, which MBU cannot use"
 
@@ -339,6 +339,8 @@ class NextStep:
     label: str
     detail: str
     enabled: bool = True
+    # Short line shown in place of the primary button when no action exists.
+    headline: str = ""
 
 
 _SETUP_DETAIL = (
@@ -355,29 +357,46 @@ _FORMAT_DETAIL = (
 def next_step(inventory: Inventory) -> NextStep:
     unsupported = live_disk_unsupported(inventory)
     if unsupported is not None:
-        # Nothing the user can do from inside the app, so offer no action.
-        return NextStep("blocked", "Back up now", unsupported, enabled=False)
+        # No action exists, so the caller hides the button rather than offering
+        # a dead one. A greyed-out "Back up now" reads as the app suggesting
+        # the single thing it can never do here.
+        return NextStep(
+            "blocked",
+            "Cannot back up this computer",
+            unsupported,
+            enabled=False,
+            headline="This computer cannot be backed up",
+        )
     if inventory.unnamed_live:
         return NextStep("setup", "Set up this computer", _SETUP_DETAIL)
     if not inventory.backup_sets:
         return NextStep("format", "Prepare a backup disk", _FORMAT_DETAIL)
     if len(inventory.backup_sets) > 1:
         return NextStep(
-            "blocked", "Back up now", _MULTIPLE_BACKUP_REASON, enabled=False
+            "blocked",
+            "Unplug the extra backup disks",
+            _MULTIPLE_BACKUP_REASON,
+            enabled=False,
+            headline="Too many backup disks are connected",
         )
     if inventory.start_blocked_reason is not None:
         # Something outside the disk layout is blocking, such as the guard that
         # fires when we booted from a clone. Never offer a way past that.
         return NextStep(
-            "blocked", "Back up now", inventory.start_blocked_reason, enabled=False
+            "blocked",
+            "Cannot back up right now",
+            inventory.start_blocked_reason,
+            enabled=False,
+            headline="Backing up is not safe right now",
         )
     route = describe_backup_route(inventory)
     if route is None:
         return NextStep(
             "blocked",
-            "Back up now",
+            "Cannot back up right now",
             "Cannot tell which disk would be written to.",
             enabled=False,
+            headline="The backup disk cannot be identified",
         )
     return NextStep("backup", "Back up now", route)
 

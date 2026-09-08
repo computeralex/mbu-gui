@@ -51,6 +51,29 @@ def test_unnamed_computer_offers_setup_instead_of_a_dead_button():
     assert w.stack.currentIndex() == PAGE_SETUP
 
 
+def test_unsupported_computer_shows_no_button_at_all():
+    """An MBR system disk is a dead end, so the app must not offer a button.
+
+    The earlier build showed a giant greyed-out "Back up now", which reads as
+    the app suggesting the one thing this computer can never do. There is also
+    no point letting the user into the naming or prepare pages, since neither
+    can make an MBR install backable.
+    """
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_mbr_live.json").read_text())
+    w = MainWindow(inventory=inv, last_run=None)
+    w.show()
+    assert w.startButton.isHidden()
+    assert w.blockedHeadlineLabel.isVisible()
+    assert w.blockedHeadlineLabel.text() == "This computer cannot be backed up"
+    assert "MBR" in w.startReasonLabel.text()
+    assert "UEFI" in w.startReasonLabel.text()
+    assert not w.setupButton.isEnabled()
+    assert not w.formatButton.isEnabled()
+    # Reading an existing backup is unaffected by the live disk's layout.
+    assert w.browseButton.isEnabled()
+
+
 def test_missing_backup_disk_offers_prepare_and_says_to_replug():
     """The dead end that made the app look broken after a reboot.
 

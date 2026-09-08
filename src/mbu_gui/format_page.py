@@ -101,6 +101,10 @@ class FormatPage(QWidget):
         self.blockReasonLabel = QLabel("")
         self.blockReasonLabel.setObjectName("blockReasonLabel")
         self.blockReasonLabel.setWordWrap(True)
+        self.blockReasonLabel.setStyleSheet(
+            "background-color: #FCF3CF; color: #000000; padding: 8px;"
+        )
+        self.blockReasonLabel.hide()
         layout.addWidget(self.blockReasonLabel)
 
         buttons = QHBoxLayout()
@@ -217,4 +221,5 @@ class FormatPage(QWidget):
         self._sync_details()
         reason = self.block_reason()
         self.blockReasonLabel.setText(reason or "")
+        self.blockReasonLabel.setVisible(reason is not None)
         self.formatButton.setEnabled(reason is None)
