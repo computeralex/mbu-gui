@@ -22,13 +22,19 @@ from mbu_gui.backup_dialog import UNKNOWN_DESTINATION_TEXT, BackupDialog
 from mbu_gui.browse_page import BrowsePage, UNMOUNT_FAIL_TEXT
 from mbu_gui.disks import (
     Inventory,
+    NextStep,
     describe_backup_route,
     live_disk_unsupported,
     next_step,
 )
 from mbu_gui.format_page import FormatPage
 from mbu_gui.helper_client import explain_helper_failure, pkexec_argv, which_helper
-from mbu_gui.logs import LastRun, current_file_from_line, last_run_label
+from mbu_gui.logs import (
+    LastRun,
+    current_file_from_line,
+    last_run_label,
+    plain_label_line,
+)
 from mbu_gui.process import LineProcess
 from mbu_gui.setup_page import SetupPage
 
@@ -51,6 +57,15 @@ PAGE_FORMAT = 2
 PAGE_BROWSE = 3
 
 CLOSE_MOUNTED_TEXT = "Unmount the backup before closing."
+SETUP_DONE_TEXT = (
+    "This computer is named and ready. Next: prepare a backup disk, which "
+    "erases a spare disk and sets it up to receive backups."
+)
+SETUP_REBOOT_TEXT = (
+    "The names are written to the disk, but this computer is running from that "
+    "disk and cannot see them until it restarts. Restart, then open MBU Backup "
+    "again. You do not need to set up this computer a second time."
+)
 
 _HELPER_NOUNS = {
     "backup": "backup",
@@ -111,6 +126,7 @@ class MainWindow(QMainWindow):
         self._line_process: LineProcess | None = None
         self._backup_unfinished = backup_unfinished
         self._live_disk_usable = live_disk_unsupported(inventory) is None
+        self._needs_reboot = False
 
         self.setWindowTitle("MBU Backup")
         icon = _icon_path()
@@ -300,6 +316,14 @@ class MainWindow(QMainWindow):
 
     def _sync_next_step(self) -> None:
         step = next_step(self.inventory)
+        if self._needs_reboot and self.inventory.unnamed_live:
+            step = NextStep(
+                "blocked",
+                "Restart to finish setting up",
+                SETUP_REBOOT_TEXT,
+                enabled=False,
+                headline="Restart this computer to finish",
+            )
         self._next_step = step
         self.startButton.setText(step.label)
         self.startReasonLabel.setText(step.detail)
@@ -631,6 +655,11 @@ class MainWindow(QMainWindow):
 
     def _on_helper_line(self, text: str) -> None:
         self._helper_output.append(text)
+        if self._helper_kind == "label-live":
+            shown = plain_label_line(text)
+            if shown is not None:
+                self.append_log(shown)
+            return
         self.append_log(text)
 
     def _on_process_finished(self, code: int) -> None:
@@ -663,8 +692,21 @@ class MainWindow(QMainWindow):
     def on_label_live_finished(self, code: int, stderr: str = "") -> None:
         if code != 0:
             self.show_error(self._explain_failure(code, stderr))
+            self.set_running(False)
+            self._go_home()
+            return
         self.set_running(False)
         self._go_home()
+        # The names are on the disk, but the kernel cannot re-read the table of
+        # the disk it is running from. If udev did not pick the new names up we
+        # must say so, because offering "Set up this computer" again is the loop
+        # that made the app look broken.
+        if self.inventory.unnamed_live:
+            self._needs_reboot = True
+            self._sync_next_step()
+            self.append_log(SETUP_REBOOT_TEXT)
+            return
+        self.append_log(SETUP_DONE_TEXT)
 
     def on_format_finished(self, code: int, stderr: str = "") -> None:
         if code != 0:

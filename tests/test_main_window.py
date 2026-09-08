@@ -94,6 +94,45 @@ def test_missing_backup_disk_offers_prepare_and_says_to_replug():
     assert w.stack.currentIndex() == PAGE_FORMAT
 
 
+def test_naming_reports_plainly_and_says_what_comes_next():
+    """Setup used to end with six lines of raw sfdisk output and no verdict."""
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_unnamed.json").read_text())
+    named = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = MainWindow(inventory=inv, last_run=None, reload_inventory=lambda: named)
+    w._helper_kind = "label-live"
+    for line in (
+        "Partition name changed from '' to 'main-efi'.",
+        "The partition table has been altered.",
+        "Re-reading the partition table failed.: Device or resource busy",
+        "Syncing disks.",
+    ):
+        w._on_helper_line(line)
+    log = w.logView.toPlainText()
+    assert "Named this computer's main-efi partition" in log
+    assert "ioctl" not in log and "Device or resource busy" not in log
+    w.on_label_live_finished(0)
+    assert "prepare a backup disk" in w.logView.toPlainText()
+
+
+def test_names_the_kernel_cannot_see_yet_ask_for_a_restart():
+    """The loop that made the app unusable.
+
+    If udev does not pick the new names up, the inventory still reads unnamed,
+    and the old build answered by offering "Set up this computer" again on work
+    the user had already done.
+    """
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_unnamed.json").read_text())
+    w = MainWindow(inventory=inv, last_run=None, reload_inventory=lambda: inv)
+    w.on_label_live_finished(0)
+    assert w.startButton.isHidden()
+    assert w.blockedHeadlineLabel.text() == "Restart this computer to finish"
+    assert "restart" in w.startReasonLabel.text().lower()
+    assert "do not need to set up this computer a second time" in w.startReasonLabel.text()
+    assert w._next_step.action == "blocked"
+
+
 def test_error_and_unplug_and_busy():
     app()
     inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())

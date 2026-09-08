@@ -1,5 +1,10 @@
 # tests/test_logs.py
-from mbu_gui.logs import current_file_from_line, last_run_label, parse_master_log
+from mbu_gui.logs import (
+    current_file_from_line,
+    last_run_label,
+    parse_master_log,
+    plain_label_line,
+)
 
 LOG = """
 2025/01/07-10:00:00 START BACKUP FROM main TO bak1
@@ -29,6 +34,42 @@ def test_parse_last_done_wins():
 def test_empty_log():
     assert parse_master_log("") is None
     assert last_run_label(None) == "No backup yet"
+
+
+def test_sfdisk_chatter_never_reaches_the_user():
+    """The naming step printed six lines of partition-table plumbing.
+
+    The two "busy" lines are the normal result of renaming the disk you booted
+    from, but they read as a failure to anyone who is not a Linux admin.
+    """
+    noise = [
+        "The partition table has been altered.",
+        "Calling ioctl() to re-read partition table.",
+        "Re-reading the partition table failed.: Device or resource busy",
+        "The kernel still uses the old table. The new table will be used at "
+        "the next reboot or after you run partprobe(8) or partx(8).",
+        "Syncing disks.",
+        "",
+    ]
+    assert [plain_label_line(line) for line in noise] == [None] * len(noise)
+
+
+def test_a_rename_is_reported_in_plain_words():
+    assert (
+        plain_label_line("Partition name changed from '' to 'main-efi'.")
+        == "Named this computer's main-efi partition"
+    )
+    assert (
+        plain_label_line("Partition name changed from 'Winux' to 'main-root'.")
+        == "Named this computer's main-root partition"
+    )
+
+
+def test_an_unrecognised_line_is_passed_through_untouched():
+    """Quieting known noise must never swallow a real error."""
+    for line in ("sfdisk: cannot open /dev/sda: No such file or directory",
+                 "Permission denied"):
+        assert plain_label_line(line) == line
 
 
 def test_current_file():

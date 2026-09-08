@@ -26,7 +26,9 @@ from mbu_gui_helper.commands import (
     mbumount_argv,
     mbup_argv,
     mbu_environ,
+    partx_update_argv,
     sfdisk_label_argv,
+    udev_settle_argv,
 )
 from mbu_gui_helper.runner import run_streamed
 from mbu_gui_helper.safety import (
@@ -267,6 +269,13 @@ def _dispatch(args, *, paths, env, lsblk_data, environ, run) -> int:
             code = invoke(sfdisk_label_argv(part.disk, part.partn, label))
             if code != 0:
                 return code
+        # Best effort: without this the names sit on the disk but lsblk keeps
+        # reporting the old ones, so the GUI would ask for setup all over again.
+        # A failure here only costs the user a reboot, so it must not fail the
+        # command after the table was written successfully.
+        for disk in sorted({part.disk for part, _ in planned}):
+            invoke(partx_update_argv(disk))
+        invoke(udev_settle_argv())
         record_labelled_machine(paths, planned, inventory)
         return 0
 

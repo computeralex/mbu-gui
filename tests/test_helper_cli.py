@@ -305,6 +305,48 @@ def test_label_live_records_the_chosen_set(tmp_path):
     assert record["machine_set"] == "newname"
 
 
+def test_label_live_refreshes_what_the_kernel_reports(tmp_path):
+    """New names must be visible without a reboot.
+
+    sfdisk cannot make the kernel re-read the table of the disk it is running
+    from, so lsblk keeps reporting the old names and the GUI asks the user to
+    set the computer up again, forever.
+    """
+    calls = []
+    code = main(
+        ["label-live", "--labels", "sda2=newname-root,sda1=newname-efi"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_unnamed.json"),
+        run=lambda argv, **k: calls.append(list(argv)) or 0,
+        state_dir=_state(tmp_path),
+    )
+    assert code == 0
+    assert ["partx", "-u", "/dev/sda"] in calls
+    assert ["udevadm", "settle"] in calls
+    # The refresh is pointless before the names are actually written.
+    assert calls.index(["partx", "-u", "/dev/sda"]) > max(
+        i for i, c in enumerate(calls) if c[0] == "sfdisk"
+    )
+
+
+def test_a_refresh_that_fails_does_not_fail_the_naming(tmp_path):
+    """partx failing costs the user a reboot, not their partition names.
+
+    The table is already written by then, so reporting failure would send the
+    user back through setup to redo work that succeeded.
+    """
+    state = _state(tmp_path)
+    code = main(
+        ["label-live", "--labels", "sda2=newname-root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_unnamed.json"),
+        run=lambda argv, **k: 0 if argv[0] == "sfdisk" else 1,
+        state_dir=state,
+    )
+    assert code == 0
+    assert json.loads((state / "machine.json").read_text())["machine_set"] == "newname"
+
+
 def test_failed_label_live_does_not_record(tmp_path):
     state = _state(tmp_path)
     code = main(
