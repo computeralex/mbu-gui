@@ -58,6 +58,31 @@ def last_run_label(run: LastRun | None) -> str:
     return label
 
 
+SYNC_START_RE = re.compile(r"^START Directory SYNC FROM (?P<frm>\S+) TO (?P<to>\S+)")
+
+
+def sync_target(line: str) -> str | None:
+    """Name of the thing MBU just started copying, or None for other lines.
+
+    MBU announces each partition it syncs. rsync itself is run without
+    --info=progress2, so there are no byte totals to read; these markers are
+    the only honest progress signal available without changing MBU.
+    """
+    m = SYNC_START_RE.match(line.strip())
+    if m is None:
+        return None
+    dest = m.group("to").rstrip("/")
+    return dest.rsplit("/", 1)[-1] or dest
+
+
+def progress_label(done: int, total: int, target: str, files: int) -> str:
+    where = f"Copying {target}" if target else "Copying"
+    step = f"{where} ({done} of {total})" if total else where
+    if files:
+        return f"{step} — {files:,} files so far"
+    return step
+
+
 _RENAMED_RE = re.compile(
     r"^Partition name changed from '(?P<old>[^']*)' to '(?P<new>[^']*)'\.$"
 )

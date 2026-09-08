@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from pathlib import Path
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QSizePolicy
 
 from mbu_gui.disks import load_lsblk
 from mbu_gui.logs import LastRun
@@ -131,6 +131,87 @@ def test_names_the_kernel_cannot_see_yet_ask_for_a_restart():
     assert "restart" in w.startReasonLabel.text().lower()
     assert "do not need to set up this computer a second time" in w.startReasonLabel.text()
     assert w._next_step.action == "blocked"
+
+
+def _runnable_window(inv):
+    """A window whose backup path reaches the helper instead of erroring out."""
+    return MainWindow(
+        inventory=inv,
+        last_run=None,
+        helper_exists=True,
+        pkexec_exists=True,
+        start_process=lambda argv: None,
+        helper_path=Path("/usr/lib/mbu-gui/mbu-gui-helper"),
+    )
+
+
+def test_a_long_path_does_not_widen_the_window():
+    """Every deeper path made the window grow, and it never shrank back.
+
+    A label reports the full width of its text as its preferred size, so the
+    layout kept widening to fit paths that are wider than any screen.
+    """
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = MainWindow(inventory=inv, last_run=None)
+    w.show()
+    w.resize(720, 560)
+    start = w.width()
+    for depth in range(1, 40):
+        w.show_current_file("home/alex/" + "a-quite-long-directory-name/" * depth + "f")
+        w.layout().activate()
+    assert w.sizeHint().width() <= start
+    assert w.currentFileLabel.sizeHint().width() <= start
+
+
+def test_the_first_path_cannot_widen_the_window_either():
+    """Before the first layout pass there is no width to shorten the text to.
+
+    Eliding is what keeps the label narrow once the window has been laid out,
+    so the size policy is the only thing covering the very first path.
+    """
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = MainWindow(inventory=inv, last_run=None)
+    w.show_current_file("home/alex/" + "a-quite-long-directory-name/" * 40 + "f")
+    assert (
+        w.currentFileLabel.sizePolicy().horizontalPolicy()
+        == QSizePolicy.Policy.Ignored
+    )
+    w.show()
+    w.resize(720, 560)
+    w.layout().activate()
+    assert w.sizeHint().width() <= 720
+
+
+def test_backup_progress_counts_partitions_not_flags():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = _runnable_window(inv)
+    w._run_backup_with_fselection("-bootfix,efi,root,home")
+    assert not w.progressBar.isHidden()
+    assert w.progressBar.maximum() == 3
+
+    w._on_helper_line("START Directory SYNC FROM /boot/efi TO /mnt/bak1/efi")
+    w._on_helper_line("EFI/ubuntu/grubx64.efi")
+    w._on_helper_line("EFI/ubuntu/shimx64.efi")
+    assert "Copying efi (1 of 3)" in w.progressBar.format()
+    assert "2 files" in w.progressBar.format()
+
+    w._on_helper_line("START Directory SYNC FROM / TO /mnt/bak1/root")
+    assert "Copying root (2 of 3)" in w.progressBar.format()
+    # The file count belongs to the partition being copied, not the whole run.
+    assert "files" not in w.progressBar.format()
+    assert w.progressBar.value() == 1
+
+
+def test_a_failed_backup_does_not_leave_a_progress_bar_claiming_success():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = _runnable_window(inv)
+    w._run_backup_with_fselection("efi,root")
+    w.on_helper_finished(1, "rsync failed")
+    assert w.progressBar.isHidden()
 
 
 def test_error_and_unplug_and_busy():

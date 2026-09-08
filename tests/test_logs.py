@@ -4,6 +4,8 @@ from mbu_gui.logs import (
     last_run_label,
     parse_master_log,
     plain_label_line,
+    progress_label,
+    sync_target,
 )
 
 LOG = """
@@ -34,6 +36,18 @@ def test_parse_last_done_wins():
 def test_empty_log():
     assert parse_master_log("") is None
     assert last_run_label(None) == "No backup yet"
+
+
+def test_sync_markers_name_the_partition_being_copied():
+    assert sync_target("START Directory SYNC FROM /boot/efi TO /mnt/bak1/efi") == "efi"
+    assert sync_target("START Directory SYNC FROM / TO /mnt/bak1/root/") == "root"
+    assert sync_target("home/alex/.bashrc") is None
+    assert sync_target("DONE- BACKUP FROM main TO bak1 : efi root") is None
+
+
+def test_progress_label_reads_as_a_sentence():
+    assert progress_label(1, 3, "efi", 0) == "Copying efi (1 of 3)"
+    assert progress_label(2, 3, "root", 12345) == "Copying root (2 of 3) — 12,345 files so far"
 
 
 def test_sfdisk_chatter_never_reaches_the_user():

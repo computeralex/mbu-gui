@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont, QFontMetrics, QIcon
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -12,7 +12,9 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -34,6 +36,8 @@ from mbu_gui.logs import (
     current_file_from_line,
     last_run_label,
     plain_label_line,
+    progress_label,
+    sync_target,
 )
 from mbu_gui.process import LineProcess
 from mbu_gui.setup_page import SetupPage
@@ -127,6 +131,10 @@ class MainWindow(QMainWindow):
         self._backup_unfinished = backup_unfinished
         self._live_disk_usable = live_disk_unsupported(inventory) is None
         self._needs_reboot = False
+        self._phases_total = 0
+        self._phases_done = 0
+        self._phase_files = 0
+        self._phase_target = ""
 
         self.setWindowTitle("MBU Backup")
         icon = _icon_path()
@@ -195,13 +203,30 @@ class MainWindow(QMainWindow):
         secondary.addWidget(self.browseButton)
         layout.addLayout(secondary)
 
+        self.progressBar = QProgressBar()
+        self.progressBar.setObjectName("progressBar")
+        self.progressBar.setTextVisible(True)
+        self.progressBar.hide()
+
         self.currentFileLabel = QLabel("")
         self.currentFileLabel.setObjectName("currentFileLabel")
+        # A deep path is wider than the window, and a label reports its full
+        # text width as its preferred size, so the layout grew the window on
+        # every longer path. Ignore that preference and shorten the text to fit.
+        self.currentFileLabel.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        self.currentFileLabel.setMinimumWidth(0)
+        self._current_file = ""
 
         self.logView = QPlainTextEdit()
         self.logView.setObjectName("logView")
         self.logView.setReadOnly(True)
         self.logView.setMinimumHeight(160)
+        self.logView.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.logView.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
+        )
 
         self.unplugBanner = QLabel(UNPLUG_BANNER_TEXT)
         self.unplugBanner.setObjectName("unplugBanner")
@@ -237,6 +262,7 @@ class MainWindow(QMainWindow):
         root = QWidget()
         root_layout = QVBoxLayout(root)
         root_layout.addWidget(self.stack, 1)
+        root_layout.addWidget(self.progressBar)
         root_layout.addWidget(self.currentFileLabel)
         root_layout.addWidget(self.logView)
         root_layout.addWidget(self.unplugBanner)
@@ -418,7 +444,49 @@ class MainWindow(QMainWindow):
         self.logView.appendPlainText(line)
         current = current_file_from_line(line)
         if current is not None:
-            self.currentFileLabel.setText(current)
+            self.show_current_file(current)
+
+    def _start_progress(self, fselection: str) -> None:
+        # The requested functions tell us how many partitions MBU will copy, so
+        # the bar can be a real fraction rather than a spinner. Flags such as
+        # -bootfix are instructions, not partitions, and must not be counted.
+        self._phases_total = len(
+            [f for f in fselection.split(",") if f and not f.startswith("-")]
+        )
+        self._phases_done = 0
+        self._phase_files = 0
+        self._phase_target = ""
+        self.progressBar.setMaximum(max(self._phases_total, 1))
+        self.progressBar.setValue(0)
+        self.progressBar.setFormat("Starting")
+        self.progressBar.show()
+
+    def _finish_progress(self, ok: bool) -> None:
+        if not ok:
+            self.progressBar.hide()
+            return
+        self.progressBar.setMaximum(1)
+        self.progressBar.setValue(1)
+        self.progressBar.setFormat("Backup finished")
+
+    def show_current_file(self, text: str) -> None:
+        self._current_file = text
+        self._elide_current_file()
+
+    def _elide_current_file(self) -> None:
+        room = self.currentFileLabel.width()
+        if room <= 1:
+            # Before the first layout pass there is no width to fit into.
+            self.currentFileLabel.setText(self._current_file)
+            return
+        metrics = QFontMetrics(self.currentFileLabel.font())
+        self.currentFileLabel.setText(
+            metrics.elidedText(self._current_file, Qt.TextElideMode.ElideMiddle, room)
+        )
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._elide_current_file()
 
     def show_error(self, message: str) -> None:
         self.append_log(message)
@@ -548,6 +616,7 @@ class MainWindow(QMainWindow):
             return
         argv = pkexec_argv(helper, ["backup", "--fselection", fselection])
         self._helper_output = []
+        self._start_progress(fselection)
         self.show_unplug(False)
         self.set_running(True)
         if self.start_process is not None:
@@ -660,7 +729,28 @@ class MainWindow(QMainWindow):
             if shown is not None:
                 self.append_log(shown)
             return
+        if self._helper_kind == "backup":
+            self._track_progress(text)
         self.append_log(text)
+
+    def _track_progress(self, text: str) -> None:
+        target = sync_target(text)
+        if target is not None:
+            self._phases_done += 1
+            self._phase_target = target
+            self._phase_files = 0
+        elif current_file_from_line(text) is not None:
+            self._phase_files += 1
+        else:
+            return
+        total = max(self._phases_total, self._phases_done)
+        self.progressBar.setMaximum(total)
+        self.progressBar.setValue(max(self._phases_done - 1, 0))
+        self.progressBar.setFormat(
+            progress_label(
+                self._phases_done, total, self._phase_target, self._phase_files
+            )
+        )
 
     def _on_process_finished(self, code: int) -> None:
         stderr = "\n".join(self._helper_output)
@@ -676,6 +766,7 @@ class MainWindow(QMainWindow):
             self.on_helper_finished(code, stderr)
 
     def on_helper_finished(self, code: int, stderr: str = "") -> None:
+        self._finish_progress(code == 0)
         if code == 0:
             self._backup_unfinished = False
             self.show_unplug(True)
