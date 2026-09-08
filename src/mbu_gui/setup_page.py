@@ -12,7 +12,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mbu_gui.disks import Inventory, is_valid_set_name, propose_labels
+from mbu_gui.disks import (
+    Inventory,
+    describe_disk,
+    find_disk,
+    propose_labels,
+    setup_block_reason,
+)
 
 SAFETY_COPY = "This only names partitions; it does not erase the disk."
 ALREADY_NAMED_TEXT = (
@@ -46,6 +52,14 @@ class SetupPage(QWidget):
         self.alreadyNamedLabel.setVisible(bool(already))
         layout.addWidget(self.alreadyNamedLabel)
 
+        # Same disk identity line the prepare page shows, so both pages state
+        # which physical disk they are about to touch in the same terms.
+        live = find_disk(inventory, inventory.live_disk)
+        self.diskInfoLabel = QLabel(describe_disk(live) if live is not None else "")
+        self.diskInfoLabel.setObjectName("diskInfoLabel")
+        self.diskInfoLabel.setWordWrap(True)
+        layout.addWidget(self.diskInfoLabel)
+
         layout.addWidget(QLabel("Set name"))
         self.setNameEdit = QLineEdit(DEFAULT_SET_NAME)
         self.setNameEdit.setObjectName("setNameEdit")
@@ -65,6 +79,11 @@ class SetupPage(QWidget):
             QAbstractItemView.SelectionBehavior.SelectRows
         )
         layout.addWidget(self.previewTable)
+
+        self.blockReasonLabel = QLabel("")
+        self.blockReasonLabel.setObjectName("blockReasonLabel")
+        self.blockReasonLabel.setWordWrap(True)
+        layout.addWidget(self.blockReasonLabel)
 
         buttons = QHBoxLayout()
         self.applyButton = QPushButton("Apply names")
@@ -99,18 +118,18 @@ class SetupPage(QWidget):
             for col, value in enumerate(values):
                 self.previewTable.setItem(row, col, QTableWidgetItem(value))
 
+    def block_reason(self) -> str | None:
+        return setup_block_reason(
+            self.inventory, self.setNameEdit.text(), self.confirmEdit.text()
+        )
+
     def _can_apply(self) -> bool:
-        name = self.setNameEdit.text()
-        if not is_valid_set_name(name):
-            return False
-        if name == self.inventory.live_set:
-            return False
-        if name in self.inventory.backup_sets:
-            return False
-        return self.confirmEdit.text() == name
+        return self.block_reason() is None
 
     def _sync_enabled(self) -> None:
-        self.applyButton.setEnabled(self._can_apply())
+        reason = self.block_reason()
+        self.blockReasonLabel.setText(reason or "")
+        self.applyButton.setEnabled(reason is None)
 
     def labels_arg(self) -> str:
         name = self.setNameEdit.text()

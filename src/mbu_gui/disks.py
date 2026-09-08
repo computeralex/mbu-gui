@@ -12,6 +12,11 @@ _NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]")
 
 CONFIRM_TOKEN_LEN = 8
 
+NO_DISK_ID_TEXT = (
+    "This disk reports no serial number, so MBU cannot tell it apart from "
+    "another disk after a replug. Refusing to format it."
+)
+
 SWAP_MOUNTPOINT = "[SWAP]"
 # Anything mounted outside these trees counts as the running system using the
 # disk. Removable-media mounts are where the desktop auto-mounts a USB stick,
@@ -182,6 +187,125 @@ def describe_backup_route(inventory: Inventory) -> str | None:
         f"From this computer (set `{inventory.live_set}`)\n"
         f"Onto backup set `{set_name}`, overwriting:\n{targets}"
     )
+
+
+def find_disk(inventory: Inventory, name: str | None) -> Disk | None:
+    for disk in inventory.disks:
+        if disk.name == name:
+            return disk
+    return None
+
+
+def disk_set_names(disk: Disk) -> set[str]:
+    """MBU set names currently written on this disk's partitions."""
+    names: set[str] = set()
+    for part in disk.partitions:
+        parsed = split_mbu_label(part.partlabel)
+        if parsed is not None:
+            names.add(parsed[0])
+    return names
+
+
+def other_disk_set_names(inventory: Inventory, disk: Disk) -> set[str]:
+    """Set names in use on every disk except this one.
+
+    A name already on the disk we are about to erase is not a conflict: that
+    label is about to be overwritten. Re-preparing a backup disk under its
+    existing name is the common case, so only names on *other* attached disks
+    can collide.
+    """
+    names: set[str] = set()
+    for other in inventory.disks:
+        if other.name == disk.name:
+            continue
+        names |= disk_set_names(other)
+    return names
+
+
+def suggested_set_name(inventory: Inventory, disk: Disk) -> str:
+    """A set name that will pass validation, so the field is never dead on arrival."""
+    taken = other_disk_set_names(inventory, disk)
+    if inventory.live_set:
+        taken.add(inventory.live_set)
+    existing = sorted(disk_set_names(disk))
+    for name in existing:
+        if name not in taken:
+            return name
+    for n in range(1, 100):
+        candidate = "backup" if n == 1 else f"backup{n}"
+        if candidate not in taken:
+            return candidate
+    return ""
+
+
+def setup_block_reason(
+    inventory: Inventory,
+    name: str,
+    typed_confirm: str,
+) -> str | None:
+    """Why Set up this computer cannot proceed yet.
+
+    Same failure as the prepare page: several conditions gate Apply names and
+    none were shown, so the default name on an already-named machine produced a
+    dead button with no explanation.
+    """
+    if not name:
+        return "Give this computer's partitions a set name."
+    if not is_valid_set_name(name):
+        return f"`{name}` will not work as a set name. Use letters and digits only."
+    if name == inventory.live_set:
+        return (
+            f"This computer's partitions are already named `{name}`. "
+            "You can leave them alone."
+        )
+    if name in inventory.backup_sets:
+        return (
+            f"`{name}` is already used by a backup disk that is plugged in. "
+            "Pick a different name."
+        )
+    if typed_confirm != name:
+        return f"Type {name} in the box above to confirm."
+    return None
+
+
+def format_block_reason(
+    inventory: Inventory,
+    disk: Disk | None,
+    pset: str,
+    typed_confirm: str,
+) -> str | None:
+    """Why Prepare a backup disk cannot proceed yet, in the user's words.
+
+    Five separate conditions gate the wipe and none of them used to be shown,
+    so an unmet one produced a dead button and no way to find out which.
+    """
+    if disk is None:
+        return "Choose which disk to prepare from the list above."
+    if disk.disk_id is None:
+        return NO_DISK_ID_TEXT
+    if not pset:
+        return "Give this backup set a name. Any letters and digits will do."
+    if not is_valid_set_name(pset):
+        return f"`{pset}` will not work as a set name. Use letters and digits only."
+    if pset == inventory.live_set:
+        return (
+            f"`{pset}` is this computer's own set name. "
+            "Give the backup disk a different name."
+        )
+    if pset in other_disk_set_names(inventory, disk):
+        return (
+            f"`{pset}` is already used by another disk that is plugged in. "
+            "Pick a different name or unplug that disk."
+        )
+    token = confirm_token(disk)
+    if token is None:
+        return NO_DISK_ID_TEXT
+    if typed_confirm.strip().lower() != token:
+        return (
+            f"Type the code {token.upper()} in the box above to confirm that "
+            f"{disk.name} is the disk you want to erase."
+        )
+    return None
 
 
 @dataclass(frozen=True)

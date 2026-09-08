@@ -9,25 +9,29 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from mbu_gui.disks import (
+    NO_DISK_ID_TEXT,
     Disk,
     Inventory,
     candidate_backup_disks,
     confirm_token,
-    is_valid_set_name,
+    describe_disk,
+    format_block_reason,
+    suggested_set_name,
 )
 
 WIPE_WARNING = "This will erase the disk."
 EMPTY_DISK_TEXT = "Plug in a new disk that is not this computer's system disk."
-NO_DISK_ID_TEXT = (
-    "This disk reports no serial number, so MBU cannot tell it apart from "
-    "another disk after a replug. Refusing to format it."
-)
 CONFIRM_PROMPT = "Type the confirmation code for the disk you selected"
+PARTITION_HEADERS = ["device", "size", "mount", "current label"]
+SET_NAME_LABEL = "Name for this backup set (your choice)"
+CONFIRM_LABEL = "Confirmation code"
 
 
 def _disk_item_text(disk: Disk) -> str:
@@ -64,7 +68,21 @@ class FormatPage(QWidget):
         self.diskList.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         layout.addWidget(self.diskList)
 
-        layout.addWidget(QLabel("New set name"))
+        self.diskInfoLabel = QLabel("")
+        self.diskInfoLabel.setObjectName("diskInfoLabel")
+        self.diskInfoLabel.setWordWrap(True)
+        layout.addWidget(self.diskInfoLabel)
+
+        self.partitionTable = QTableWidget(0, len(PARTITION_HEADERS))
+        self.partitionTable.setObjectName("partitionTable")
+        self.partitionTable.setHorizontalHeaderLabels(PARTITION_HEADERS)
+        self.partitionTable.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.partitionTable.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        layout.addWidget(self.partitionTable)
+
+        layout.addWidget(QLabel(SET_NAME_LABEL))
         self.psetEdit = QLineEdit()
         self.psetEdit.setObjectName("psetEdit")
         self.psetEdit.setPlaceholderText("Letters and digits only")
@@ -75,9 +93,15 @@ class FormatPage(QWidget):
         self.confirmPromptLabel.setWordWrap(True)
         layout.addWidget(self.confirmPromptLabel)
 
+        layout.addWidget(QLabel(CONFIRM_LABEL))
         self.confirmEdit = QLineEdit()
         self.confirmEdit.setObjectName("confirmEdit")
         layout.addWidget(self.confirmEdit)
+
+        self.blockReasonLabel = QLabel("")
+        self.blockReasonLabel.setObjectName("blockReasonLabel")
+        self.blockReasonLabel.setWordWrap(True)
+        layout.addWidget(self.blockReasonLabel)
 
         buttons = QHBoxLayout()
         self.formatButton = QPushButton("Format disk")
@@ -88,8 +112,9 @@ class FormatPage(QWidget):
         buttons.addWidget(self.leaveButton)
         layout.addLayout(buttons)
 
-        self.diskList.itemSelectionChanged.connect(self._sync_enabled)
-        self.diskList.currentItemChanged.connect(self._sync_enabled)
+        self._auto_pset = ""
+        self.diskList.itemSelectionChanged.connect(self._on_selection_changed)
+        self.diskList.currentItemChanged.connect(self._on_selection_changed)
         self.psetEdit.textChanged.connect(self._sync_enabled)
         self.confirmEdit.textChanged.connect(self._sync_enabled)
         self._fill_disks()
@@ -124,18 +149,49 @@ class FormatPage(QWidget):
         disk = self._selected_disk()
         return None if disk is None else disk.disk_id
 
+    def block_reason(self) -> str | None:
+        return format_block_reason(
+            self.inventory,
+            self._selected_disk(),
+            self.psetEdit.text(),
+            self.confirmEdit.text(),
+        )
+
     def _can_format(self) -> bool:
+        return self.block_reason() is None
+
+    def _on_selection_changed(self, *args) -> None:
+        self._autofill_pset()
+        self._sync_enabled()
+
+    def _autofill_pset(self) -> None:
+        """Offer a name that already passes validation for the selected disk.
+
+        The field started empty, so selecting a disk and typing the confirmation
+        code still left the button dead with nothing on screen saying a name was
+        also required. Anything the user has typed themselves is left alone.
+        """
         disk = self._selected_disk()
-        if disk is None or disk.disk_id is None:
-            return False
-        pset = self.psetEdit.text()
-        if not is_valid_set_name(pset):
-            return False
-        if pset == self.inventory.live_set:
-            return False
-        if pset in self.inventory.backup_sets:
-            return False
-        return self.confirmEdit.text().strip().lower() == confirm_token(disk)
+        if disk is None:
+            return
+        current = self.psetEdit.text()
+        if current and current != self._auto_pset:
+            return
+        self._auto_pset = suggested_set_name(self.inventory, disk)
+        self.psetEdit.setText(self._auto_pset)
+
+    def _sync_details(self) -> None:
+        disk = self._selected_disk()
+        if disk is None:
+            self.diskInfoLabel.setText("")
+            self.partitionTable.setRowCount(0)
+            return
+        self.diskInfoLabel.setText(describe_disk(disk))
+        self.partitionTable.setRowCount(len(disk.partitions))
+        for row, part in enumerate(disk.partitions):
+            values = [part.name, part.size, part.mountpoint or "", part.partlabel or ""]
+            for col, value in enumerate(values):
+                self.partitionTable.setItem(row, col, QTableWidgetItem(value))
 
     def _sync_prompt(self) -> None:
         disk = self._selected_disk()
@@ -147,13 +203,18 @@ class FormatPage(QWidget):
             self.confirmPromptLabel.setText(NO_DISK_ID_TEXT)
             self.confirmEdit.setPlaceholderText("")
             return
-        token = confirm_token(disk)
+        # Upper case so the code cannot be mistaken for a set name: it is drawn
+        # from the tail of the serial and can read like an ordinary word.
+        code = (confirm_token(disk) or "").upper()
         self.confirmPromptLabel.setText(
             f"To erase {disk.size} {disk.model or disk.name} "
-            f"({disk.disk_id}), type this code: {token}"
+            f"({disk.disk_id}), type this code: {code}"
         )
-        self.confirmEdit.setPlaceholderText(token or "")
+        self.confirmEdit.setPlaceholderText(code)
 
     def _sync_enabled(self, *args) -> None:
         self._sync_prompt()
-        self.formatButton.setEnabled(self._can_format())
+        self._sync_details()
+        reason = self.block_reason()
+        self.blockReasonLabel.setText(reason or "")
+        self.formatButton.setEnabled(reason is None)

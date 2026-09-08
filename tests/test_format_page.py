@@ -109,15 +109,129 @@ def test_disk_list_shows_name_size_model_and_partlabels():
     assert "sda" not in text.split()[0]
 
 
-def test_existing_backup_set_does_not_enable():
+def test_a_disk_can_be_re_prepared_under_its_own_existing_name():
+    """Reusing the name already on the target disk has to be allowed.
+
+    Re-preparing an existing backup disk is the common case, and its labels are
+    about to be erased anyway, so treating them as a name clash left the button
+    dead for the most ordinary thing a user would do.
+    """
     app()
     inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
     p = FormatPage(inv)
     p.diskList.setCurrentRow(0)
+    assert "bak1" in inv.backup_sets  # the name lives on sdb, the disk we target
     p.psetEdit.setText("bak1")
     p.confirmEdit.setText(token_for(inv, "sdb"))
     p._sync_enabled()
+    assert p.formatButton.isEnabled()
+    assert p.blockReasonLabel.text() == ""
+
+
+def test_name_used_by_another_attached_disk_is_still_refused():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_two_backups.json").read_text())
+    p = FormatPage(inv)
+    p.diskList.setCurrentRow(0)  # sdb, which carries bak1
+    p.psetEdit.setText("bak2")  # but bak2 is on sdc, still plugged in
+    p.confirmEdit.setText(token_for(inv, "sdb"))
+    p._sync_enabled()
     assert not p.formatButton.isEnabled()
+    assert "already used by another disk" in p.blockReasonLabel.text()
+
+
+def test_live_set_name_is_refused_with_its_own_reason():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    p = FormatPage(inv)
+    p.diskList.setCurrentRow(0)
+    p.psetEdit.setText("main")
+    p.confirmEdit.setText(token_for(inv, "sdb"))
+    p._sync_enabled()
+    assert not p.formatButton.isEnabled()
+    assert "this computer's own set name" in p.blockReasonLabel.text()
+
+
+def test_every_disabled_state_says_why():
+    """The bug behind 'greyed out and I cannot tell why'."""
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    p = FormatPage(inv)
+    p.diskList.clearSelection()
+    p.psetEdit.setText("")
+    p._sync_enabled()
+    assert "Choose which disk" in p.blockReasonLabel.text()
+
+    p.diskList.setCurrentRow(0)
+    p.psetEdit.setText("")
+    p.confirmEdit.setText("")
+    p._sync_enabled()
+    assert "name" in p.blockReasonLabel.text().lower()
+
+    p.psetEdit.setText("bak-9")
+    p._sync_enabled()
+    assert "letters and digits" in p.blockReasonLabel.text()
+
+    p.psetEdit.setText("bak9")
+    p.confirmEdit.setText("")
+    p._sync_enabled()
+    # Naming the code and the disk, so the remaining step is unambiguous.
+    assert (token_for(inv, "sdb") or "").upper() in p.blockReasonLabel.text()
+    assert "sdb" in p.blockReasonLabel.text()
+
+    p.confirmEdit.setText(token_for(inv, "sdb"))
+    p._sync_enabled()
+    assert p.formatButton.isEnabled()
+    assert p.blockReasonLabel.text() == ""
+
+
+def test_selecting_a_disk_prefills_a_name_that_works():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    p = FormatPage(inv)
+    p.diskList.setCurrentRow(0)
+    assert p.psetEdit.text() != ""
+    # Only the code is left to type, and nothing else blocks.
+    p.confirmEdit.setText(token_for(inv, "sdb"))
+    p._sync_enabled()
+    assert p.formatButton.isEnabled()
+
+
+def test_typed_name_is_not_overwritten_by_the_suggestion():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_two_backups.json").read_text())
+    p = FormatPage(inv)
+    p.diskList.setCurrentRow(0)
+    p.psetEdit.setText("mine")
+    p.diskList.setCurrentRow(1)
+    assert p.psetEdit.text() == "mine"
+
+
+def test_confirmation_code_is_shown_in_upper_case():
+    """It is the tail of a serial and can read like a word, e.g. 1backupb."""
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    p = FormatPage(inv)
+    p.diskList.setCurrentRow(0)
+    p._sync_enabled()
+    assert "1BACKUPB" in p.confirmPromptLabel.text()
+    assert p.confirmEdit.placeholderText() == "1BACKUPB"
+
+
+def test_selected_disk_details_match_the_setup_page_fields():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    p = FormatPage(inv)
+    p.diskList.setCurrentRow(0)
+    p._sync_enabled()
+    assert "serial:usb1111backupb" in p.diskInfoLabel.text()
+    assert "500G" in p.diskInfoLabel.text()
+    rows = p.partitionTable.rowCount()
+    assert rows == 4
+    labels = [p.partitionTable.item(r, 3).text() for r in range(rows)]
+    assert "bak1-efi" in labels
+    mounts = [p.partitionTable.item(r, 2).text() for r in range(rows)]
+    assert len(mounts) == rows
 
 
 def test_confirm_path_and_invalid_pset_stay_disabled():
