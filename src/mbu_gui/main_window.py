@@ -4,9 +4,10 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QFont, QFontMetrics, QIcon
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -34,10 +35,14 @@ from mbu_gui.format_page import FormatPage
 from mbu_gui.helper_client import explain_helper_failure, pkexec_argv, which_helper
 from mbu_gui.logs import (
     LastRun,
+    backup_summary,
+    copied_bytes_from_lines,
     current_file_from_line,
     last_run_label,
     plain_label_line,
     progress_label,
+    route_sets_from_lines,
+    strip_ansi,
     sync_target,
 )
 from mbu_gui.process import LineProcess
@@ -104,6 +109,33 @@ _HELPER_NOUNS = {
     "label-live": "label",
     "clean": "unmount",
 }
+
+
+def window_size_for_screen(available_width: int, available_height: int) -> tuple[int, int]:
+    """Initial size that fits a laptop/VM desktop without clipping the banner.
+
+    available_* is QScreen.availableGeometry(), which already excludes the
+    taskbar. Leave a little for the title bar so the frame stays on screen.
+    """
+    chrome = 32
+    max_w = max(available_width, 1)
+    max_h = max(available_height - chrome, 1)
+    width = min(720, max_w)
+    # The log starts hidden, so 560 was mostly empty air that pushed the
+    # unplug banner under the taskbar on a 768-tall guest.
+    preferred_h = 440
+    height = min(preferred_h, max_h)
+    return width, height
+
+
+class _LogView(QPlainTextEdit):
+    """A log that can appear without asking the window to grow."""
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 0)
+
+    def sizeHint(self) -> QSize:
+        return QSize(0, 0)
 
 
 def _icon_candidates() -> tuple[Path, ...]:
@@ -177,10 +209,12 @@ class MainWindow(QMainWindow):
         self.homePage = QWidget()
         self.homePage.setObjectName("homePage")
         layout = QVBoxLayout(self.homePage)
+        layout.setSpacing(4)
+        layout.setContentsMargins(12, 8, 12, 8)
 
         title = QLabel("MBU Backup")
         title_font = QFont(title.font())
-        title_font.setPointSize(title_font.pointSize() + 6)
+        title_font.setPointSize(title_font.pointSize() + 3)
         title_font.setBold(True)
         title.setFont(title_font)
         layout.addWidget(title)
@@ -198,10 +232,10 @@ class MainWindow(QMainWindow):
         self.startButton = QPushButton(self._next_step.label)
         self.startButton.setObjectName("startButton")
         start_font = QFont(self.startButton.font())
-        start_font.setPointSize(start_font.pointSize() + 4)
+        start_font.setPointSize(start_font.pointSize() + 2)
         start_font.setBold(True)
         self.startButton.setFont(start_font)
-        self.startButton.setMinimumHeight(48)
+        self.startButton.setMinimumHeight(36)
         self.startButton.setEnabled(self._next_step.enabled)
         self.startButton.clicked.connect(self.on_start_clicked)
         layout.addWidget(self.startButton)
@@ -248,6 +282,16 @@ class MainWindow(QMainWindow):
         self.progressBar.hide()
         self.cancelButton.hide()
 
+        self.summaryLabel = QLabel("")
+        self.summaryLabel.setObjectName("summaryLabel")
+        self.summaryLabel.setWordWrap(True)
+        self.summaryLabel.hide()
+
+        self.detailsButton = QPushButton("See details")
+        self.detailsButton.setObjectName("detailsButton")
+        self.detailsButton.setFlat(True)
+        self.detailsButton.clicked.connect(self.on_details_clicked)
+
         self.currentFileLabel = QLabel("")
         self.currentFileLabel.setObjectName("currentFileLabel")
         # A deep path is wider than the window, and a label reports its full
@@ -257,16 +301,19 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
         self.currentFileLabel.setMinimumWidth(0)
+        self.currentFileLabel.hide()
         self._current_file = ""
 
-        self.logView = QPlainTextEdit()
+        self.logView = _LogView()
         self.logView.setObjectName("logView")
         self.logView.setReadOnly(True)
-        self.logView.setMinimumHeight(160)
+        self.logView.setMinimumHeight(0)
         self.logView.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        # Ignored so showing the log cannot lift the window via sizeHint.
         self.logView.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored
         )
+        self.logView.hide()
 
         self.unplugBanner = QLabel(UNPLUG_BANNER_TEXT)
         self.unplugBanner.setObjectName("unplugBanner")
@@ -308,13 +355,35 @@ class MainWindow(QMainWindow):
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
+        root_layout.setSpacing(6)
+        root_layout.setContentsMargins(9, 8, 9, 8)
         root_layout.addWidget(self.stack, 1)
         root_layout.addLayout(progress_row)
-        root_layout.addWidget(self.currentFileLabel)
-        root_layout.addWidget(self.logView)
+        root_layout.addWidget(self.summaryLabel)
+        self.detailsPanel = QWidget()
+        self.detailsPanel.setObjectName("detailsPanel")
+        details_layout = QVBoxLayout(self.detailsPanel)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        details_layout.setSpacing(4)
+        details_row = QHBoxLayout()
+        details_row.addWidget(self.detailsButton)
+        details_row.addStretch(1)
+        details_layout.addLayout(details_row)
+        details_layout.addWidget(self.currentFileLabel)
+        details_layout.addWidget(self.logView, 1)
+        self.detailsPanel.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored
+        )
+        root_layout.addWidget(self.detailsPanel, 1)
         root_layout.addWidget(self.unplugBanner)
         self.setCentralWidget(root)
-        self.resize(720, 560)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            geo = screen.availableGeometry()
+            width, height = window_size_for_screen(geo.width(), geo.height())
+            self.resize(width, height)
+        else:
+            self.resize(720, 440)
 
         # One code path decides the primary button on first paint and on every
         # refresh, so the opening screen cannot disagree with a later one.
@@ -579,11 +648,20 @@ class MainWindow(QMainWindow):
             return
         self.show_unplug(False)
 
+    def on_details_clicked(self) -> None:
+        # Opening the log must not grow the window: on a small VM that is
+        # what pushed the unplug banner under the taskbar.
+        size = self.size()
+        show = self.logView.isHidden()
+        self.logView.setVisible(show)
+        self.detailsButton.setText("Hide details" if show else "See details")
+        self.resize(size)
+
     def append_log(self, line: str) -> None:
-        self.logView.appendPlainText(line)
-        current = current_file_from_line(line)
-        if current is not None:
-            self.show_current_file(current)
+        clean = strip_ansi(line)
+        self.logView.appendPlainText(clean)
+        current = current_file_from_line(clean)
+        self.show_current_file(current or "")
 
     def _start_progress(self, fselection: str) -> None:
         # The requested functions tell us how many partitions MBU will copy, so
@@ -595,25 +673,56 @@ class MainWindow(QMainWindow):
         self._phases_done = 0
         self._phase_files = 0
         self._phase_target = ""
+        self.summaryLabel.hide()
+        self.summaryLabel.setText("")
+        self.show_current_file("")
         self.progressBar.setMaximum(max(self._phases_total, 1))
         self.progressBar.setValue(0)
         self.progressBar.setFormat("Starting")
+        self.progressBar.setTextVisible(True)
         self.progressBar.show()
         self._cancelling = False
         self.cancelButton.setEnabled(True)
         self.cancelButton.show()
 
-    def _finish_progress(self, ok: bool) -> None:
+    def _finish_progress(self, ok: bool, summary: str = "") -> None:
         self.cancelButton.hide()
+        self.show_current_file("")
         if not ok:
             self.progressBar.hide()
+            self.summaryLabel.hide()
+            self.summaryLabel.setText("")
             return
         self.progressBar.setMaximum(1)
         self.progressBar.setValue(1)
-        self.progressBar.setFormat("Backup finished")
+        self.progressBar.setFormat("")
+        self.progressBar.setTextVisible(False)
+        self.summaryLabel.setText(summary)
+        self.summaryLabel.setVisible(bool(summary))
+
+    def _backup_summary_text(self) -> str:
+        copied = copied_bytes_from_lines(self._helper_output)
+        route = route_sets_from_lines(self._helper_output)
+        from_set = route[0] if route else None
+        to_set = route[1] if route else None
+        if not from_set and self.inventory.live_set:
+            from_set = self.inventory.live_set
+        if not to_set and len(self.inventory.backup_sets) == 1:
+            to_set = self.inventory.backup_sets[0]
+        if self.last_run is not None:
+            from_set = from_set or self.last_run.from_set
+            to_set = to_set or self.last_run.to_set
+        return backup_summary(
+            from_set=from_set, to_set=to_set, copied_bytes=copied
+        )
 
     def show_current_file(self, text: str) -> None:
         self._current_file = text
+        if not text:
+            self.currentFileLabel.setText("")
+            self.currentFileLabel.hide()
+            return
+        self.currentFileLabel.show()
         self._elide_current_file()
 
     def _elide_current_file(self) -> None:
@@ -913,13 +1022,14 @@ class MainWindow(QMainWindow):
             self.on_helper_finished(code, stderr)
 
     def on_helper_finished(self, code: int, stderr: str = "") -> None:
-        self._finish_progress(code == 0)
         if code == 0:
+            self._finish_progress(True, summary=self._backup_summary_text())
             self._backup_unfinished = False
             self.show_unplug(True)
             self.set_running(False)
             self.refresh()
             return
+        self._finish_progress(False)
         self.show_error(self._explain_failure(code, stderr))
         # A backup that got as far as running may already have cloned UUIDs, so
         # the disk still has to come out even though the run failed.

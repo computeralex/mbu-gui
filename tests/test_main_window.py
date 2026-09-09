@@ -17,6 +17,7 @@ from mbu_gui.main_window import (
     PAGE_WIZARD_INTRO,
     MainWindow,
     _icon_candidates,
+    window_size_for_screen,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -369,7 +370,30 @@ def test_error_and_unplug_and_busy():
     assert not w.setupButton.isEnabled()
 
 
-def test_log_and_banner_stay_visible_off_home():
+def test_details_are_hidden_until_toggled():
+    """The log used to eat the space the unplug banner needed on a small VM."""
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = MainWindow(inventory=inv, last_run=None)
+    w.show()
+    assert w.logView.isHidden()
+    assert w.detailsButton.text() == "See details"
+    height_before = w.height()
+    w.detailsButton.click()
+    assert not w.logView.isHidden()
+    assert w.detailsButton.text() == "Hide details"
+    assert w.height() == height_before
+    w.detailsButton.click()
+    assert w.logView.isHidden()
+    assert w.detailsButton.text() == "See details"
+
+
+def test_details_toggle_still_works_off_home():
+    """The log lives outside the page stack, so Prepare can still open it.
+
+    Hidden-by-default is the product rule; the old test required the log to
+    stay forced visible after leaving home.
+    """
     app()
     inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
     w = MainWindow(inventory=inv, last_run=None)
@@ -378,11 +402,98 @@ def test_log_and_banner_stay_visible_off_home():
     w.formatButton.click()
     assert w.stack.currentIndex() == PAGE_FORMAT
     assert w.stack.indexOf(w.logView) == -1
+    assert w.logView.isHidden()
+    w.detailsButton.click()
     assert not w.logView.isHidden()
     assert "formatting..." in w.logView.toPlainText()
-    assert not w.currentFileLabel.isHidden()
     w.show_unplug(True)
     assert not w.unplugBanner.isHidden()
+
+
+def test_current_file_does_not_keep_a_cleanup_line_after_finish():
+    """mbuclean's Status FINISHED sat in the current-file slot after a run."""
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = _runnable_window(inv)
+    w._run_backup_with_fselection("root")
+    w._on_helper_line("home/alex/.bashrc")
+    assert "bashrc" in w.currentFileLabel.text()
+    w._on_helper_line(
+        "mbuclean mbuClean:1269 Status FINISHED and removed /var/lib/mbu-gui/mount OK"
+    )
+    assert w.currentFileLabel.text() == ""
+    w.on_helper_finished(0)
+    assert w.currentFileLabel.text() == ""
+    assert w.currentFileLabel.isHidden()
+
+
+def test_displayed_log_strips_ansi_codes():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = MainWindow(inventory=inv, last_run=None)
+    w.append_log("\x1b[32mFINISHED\x1b[0m")
+    w.append_log("[4m[1mDO NOT FORGET")
+    text = w.logView.toPlainText()
+    assert "FINISHED" in text
+    assert "DO NOT FORGET" in text
+    assert "[32m" not in text
+    assert "[4m" not in text
+    assert "[1m" not in text
+
+
+def test_successful_backup_summarises_parsed_size_and_route():
+    """'Backup finished' said nothing about how much went where."""
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = _runnable_window(inv)
+    w._run_backup_with_fselection("root")
+    w._on_helper_line("BACKING UP PARTITION SET main TO bak1")
+    w._on_helper_line("total size is 12,884,901,888  speedup is 1.00")
+    w.on_helper_finished(0)
+    assert w.cancelButton.isHidden()
+    assert not w.summaryLabel.isHidden()
+    assert (
+        w.summaryLabel.text()
+        == "Copied about 12 GB from this computer (main) onto bak1."
+    )
+
+
+def test_successful_backup_names_the_route_without_inventing_a_size():
+    """rsync totals are missing on a quiet run; still say from-set → to-set."""
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = _runnable_window(inv)
+    w._run_backup_with_fselection("root")
+    w.on_helper_finished(0)
+    assert w.cancelButton.isHidden()
+    assert not w.summaryLabel.isHidden()
+    assert w.summaryLabel.text() == "Copied from this computer (main) onto bak1."
+    assert "GB" not in w.summaryLabel.text()
+
+
+def test_failed_backup_does_not_claim_a_successful_copy():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = _runnable_window(inv)
+    w._run_backup_with_fselection("root")
+    w._on_helper_line("total size is 12,884,901,888  speedup is 1.00")
+    w.on_helper_finished(1, "rsync failed")
+    assert w.summaryLabel.isHidden()
+    assert "Copied" not in w.summaryLabel.text()
+
+
+def test_window_fits_a_768_tall_desktop():
+    """resize(720, 560) ignored the taskbar, so the unplug banner was clipped."""
+    width, height = window_size_for_screen(1024, 768)
+    assert height <= 768
+    assert width <= 1024
+    _, short = window_size_for_screen(1366, 700)
+    assert short <= 700
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = MainWindow(inventory=inv, last_run=None)
+    w.show()
+    assert w.sizeHint().height() <= 768
 
 
 def test_icon_candidates_include_installed_and_repo_paths():
