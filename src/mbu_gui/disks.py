@@ -104,6 +104,10 @@ class Inventory:
     start_blocked_reason: str | None
     system_disks: list[str] = field(default_factory=list)
     live_pttype: str | None = None
+    # Names were written to the disk but the running kernel cannot see them
+    # yet. Derived from the machine record rather than remembered, so closing
+    # the app does not lose it and a stale flag cannot outlive the truth.
+    awaiting_restart: bool = False
 
     @classmethod
     def empty(cls, reason: str) -> Inventory:
@@ -354,7 +358,25 @@ _FORMAT_DETAIL = (
 )
 
 
+RESTART_HEADLINE = "Restart this computer to finish"
+RESTART_TO_FINISH_TEXT = (
+    "The names are written to the disk, but this computer is running from that "
+    "disk and cannot see them until it restarts. Restart, then open MBU Backup "
+    "again. You do not need to set up this computer a second time."
+)
+
+
 def next_step(inventory: Inventory) -> NextStep:
+    if inventory.awaiting_restart:
+        # Offering setup again here is the loop that made the app unusable: the
+        # work is done, the running kernel just has not noticed.
+        return NextStep(
+            "blocked",
+            "Restart to finish setting up",
+            RESTART_TO_FINISH_TEXT,
+            enabled=False,
+            headline=RESTART_HEADLINE,
+        )
     unsupported = live_disk_unsupported(inventory)
     if unsupported is not None:
         # No action exists, so the caller hides the button rather than offering

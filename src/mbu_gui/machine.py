@@ -95,7 +95,27 @@ def inversion_reason(record: MachineRecord | None, inventory: Inventory) -> str 
     )
 
 
+def naming_awaiting_restart(
+    record: MachineRecord | None, inventory: Inventory
+) -> bool:
+    """Whether this disk was named already but the kernel cannot see it yet.
+
+    The record is written by root the moment naming succeeds, so it outlives
+    both the app and a reboot. Asking it, rather than remembering in the
+    window, is what stops the app demanding setup for work already done.
+    """
+    if record is None or not inventory.unnamed_live:
+        return False
+    live_id = live_disk_id(inventory)
+    if live_id is not None and record.disk_id is not None:
+        # A record naming some other disk says nothing about this one.
+        return live_id == record.disk_id
+    return True
+
+
 def apply_machine_guard(inventory: Inventory, record: MachineRecord | None) -> Inventory:
+    if naming_awaiting_restart(record, inventory):
+        return replace(inventory, awaiting_restart=True)
     reason = inversion_reason(record, inventory)
     if reason is None:
         return inventory

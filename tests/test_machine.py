@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from mbu_gui.disks import load_lsblk
+from mbu_gui.disks import RESTART_HEADLINE, load_lsblk, next_step
 from mbu_gui.machine import (
     CLONE_STATUS_LINE,
     MachineRecord,
@@ -23,6 +23,36 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 def named():
     return load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+
+
+def test_a_named_disk_the_kernel_cannot_see_yet_asks_for_a_restart():
+    """Closing the app must not lose the fact that naming already happened.
+
+    The window remembered this in memory only, so reopening the app before
+    restarting sent the user back through setup for work already done.
+    """
+    inv = load_lsblk((FIXTURES / "lsblk_unnamed.json").read_text())
+    record = MachineRecord(machine_set="main", disk_id=live_disk_id(inv))
+    guarded = apply_machine_guard(inv, record)
+    assert guarded.awaiting_restart
+    step = next_step(guarded)
+    assert step.action == "blocked"
+    assert step.headline == RESTART_HEADLINE
+
+
+def test_a_record_naming_a_different_disk_does_not_skip_setup():
+    """A record carried on a clone must not silence a real setup need."""
+    inv = load_lsblk((FIXTURES / "lsblk_unnamed.json").read_text())
+    record = MachineRecord(machine_set="main", disk_id="wwn:0xsomeotherdisk")
+    guarded = apply_machine_guard(inv, record)
+    assert not guarded.awaiting_restart
+    assert next_step(guarded).action == "setup"
+
+
+def test_a_named_computer_is_not_told_to_restart():
+    inv = named()
+    record = MachineRecord(machine_set=inv.live_set, disk_id=live_disk_id(inv))
+    assert not apply_machine_guard(inv, record).awaiting_restart
 
 
 def test_record_round_trip(tmp_path):

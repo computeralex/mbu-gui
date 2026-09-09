@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
@@ -24,7 +25,7 @@ from mbu_gui.backup_dialog import UNKNOWN_DESTINATION_TEXT, BackupDialog
 from mbu_gui.browse_page import BrowsePage, UNMOUNT_FAIL_TEXT
 from mbu_gui.disks import (
     Inventory,
-    NextStep,
+    RESTART_TO_FINISH_TEXT,
     describe_backup_route,
     live_disk_unsupported,
     next_step,
@@ -84,11 +85,7 @@ SETUP_DONE_TEXT = (
     "This computer is named and ready. Next: prepare a backup disk, which "
     "erases a spare disk and sets it up to receive backups."
 )
-SETUP_REBOOT_TEXT = (
-    "The names are written to the disk, but this computer is running from that "
-    "disk and cannot see them until it restarts. Restart, then open MBU Backup "
-    "again. You do not need to set up this computer a second time."
-)
+SETUP_REBOOT_TEXT = RESTART_TO_FINISH_TEXT
 
 _HELPER_NOUNS = {
     "backup": "backup",
@@ -373,15 +370,11 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentIndex(PAGE_BROWSE)
 
     def _sync_next_step(self) -> None:
-        step = next_step(self.inventory)
         if self._needs_reboot and self.inventory.unnamed_live:
-            step = NextStep(
-                "blocked",
-                "Restart to finish setting up",
-                SETUP_REBOOT_TEXT,
-                enabled=False,
-                headline="Restart this computer to finish",
-            )
+            # Covers the moment between naming and the next inventory reload,
+            # before the machine record has been consulted again.
+            self.inventory = replace(self.inventory, awaiting_restart=True)
+        step = next_step(self.inventory)
         self._next_step = step
         self.startButton.setText(step.label)
         self.startReasonLabel.setText(step.detail)
