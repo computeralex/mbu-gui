@@ -50,6 +50,13 @@ class FormatPage(QWidget):
 
         layout = QVBoxLayout(self)
 
+        # Blank unless the wizard is driving, so the page still reads correctly
+        # when an expert opens it straight from the main screen.
+        self.stepLabel = QLabel("")
+        self.stepLabel.setObjectName("stepLabel")
+        self.stepLabel.hide()
+        layout.addWidget(self.stepLabel)
+
         title = QLabel("Prepare a backup disk")
         layout.addWidget(title)
 
@@ -223,3 +230,7 @@ class FormatPage(QWidget):
         self.blockReasonLabel.setText(reason or "")
         self.blockReasonLabel.setVisible(reason is not None)
         self.formatButton.setEnabled(reason is None)
+
+    def set_step(self, text: str) -> None:
+        self.stepLabel.setText(text)
+        self.stepLabel.setVisible(bool(text))

@@ -42,6 +42,14 @@ from mbu_gui.logs import (
 )
 from mbu_gui.process import LineProcess
 from mbu_gui.setup_page import SetupPage
+from mbu_gui.wizard import (
+    STEP_BACKUP,
+    STEP_FORMAT,
+    STEP_SETUP,
+    WIZARD_BUTTON_TEXT,
+    current_step,
+)
+from mbu_gui.wizard_page import WizardFinishPage, WizardIntroPage
 
 UNPLUG_BANNER_TEXT = (
     "Unplug the backup disk now.\n"
@@ -60,6 +68,8 @@ PAGE_HOME = 0
 PAGE_SETUP = 1
 PAGE_FORMAT = 2
 PAGE_BROWSE = 3
+PAGE_WIZARD_INTRO = 4
+PAGE_WIZARD_FINISH = 5
 
 CLOSE_MOUNTED_TEXT = "Unmount the backup before closing."
 # Not "data may be lost": this computer is never written to. What is at stake is
@@ -145,6 +155,7 @@ class MainWindow(QMainWindow):
         self.start_cancel = start_cancel
         self._cancel_process: LineProcess | None = None
         self._cancelling = False
+        self._wizard_active = False
         self.open_dir = open_dir
         self._running = False
         self._helper_output: list[str] = []
@@ -287,6 +298,13 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.setupPage)
         self.stack.addWidget(self.formatPage)
         self.stack.addWidget(self.browsePage)
+        self.wizardIntroPage = WizardIntroPage(inventory)
+        self.wizardIntroPage.setObjectName("wizardIntroPage")
+        self.wizardFinishPage = WizardFinishPage(inventory)
+        self.wizardFinishPage.setObjectName("wizardFinishPage")
+        self._wire_wizard_pages()
+        self.stack.addWidget(self.wizardIntroPage)
+        self.stack.addWidget(self.wizardFinishPage)
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
@@ -306,6 +324,53 @@ class MainWindow(QMainWindow):
         self._refresh_timer.setInterval(2000)
         self._refresh_timer.timeout.connect(self._on_home_timer)
         self._refresh_timer.start()
+
+    def _wire_wizard_pages(self) -> None:
+        self.wizardIntroPage.startButton.clicked.connect(self.on_wizard_start)
+        self.wizardIntroPage.leaveButton.clicked.connect(self.on_wizard_leave)
+        self.wizardFinishPage.backupButton.clicked.connect(self.on_wizard_backup)
+        self.wizardFinishPage.laterButton.clicked.connect(self.on_wizard_leave)
+
+    def on_wizard_clicked(self) -> None:
+        if self._running:
+            return
+        self._wizard_active = True
+        self.stack.setCurrentIndex(PAGE_WIZARD_INTRO)
+
+    def on_wizard_start(self) -> None:
+        self._wizard_advance()
+
+    def on_wizard_leave(self) -> None:
+        self._leave_wizard()
+
+    def on_wizard_backup(self) -> None:
+        self._leave_wizard()
+        self.on_backup_requested()
+
+    def _leave_wizard(self) -> None:
+        self._wizard_active = False
+        self.setupPage.set_step("")
+        self.formatPage.set_step("")
+        self._go_home()
+
+    def _wizard_advance(self) -> None:
+        """Show whichever step still needs doing, or stop if none does."""
+        step = current_step(self.inventory)
+        if step.name == STEP_SETUP:
+            self.setupPage.set_step(step.counter)
+            self.stack.setCurrentIndex(PAGE_SETUP)
+            return
+        if step.name == STEP_FORMAT:
+            self.formatPage.set_step(step.counter)
+            self.stack.setCurrentIndex(PAGE_FORMAT)
+            return
+        if step.name == STEP_BACKUP:
+            self.wizardFinishPage.set_step(step.counter)
+            self.stack.setCurrentIndex(PAGE_WIZARD_FINISH)
+            return
+        # Blocked: the reason is already on the home screen, and there is no
+        # step here that clicking through could satisfy.
+        self._leave_wizard()
 
     def _wire_setup_page(self) -> None:
         self.setupPage.applyButton.clicked.connect(self.on_setup_apply)
@@ -376,7 +441,10 @@ class MainWindow(QMainWindow):
             self.inventory = replace(self.inventory, awaiting_restart=True)
         step = next_step(self.inventory)
         self._next_step = step
-        self.startButton.setText(step.label)
+        # Setup and prepare are steps of the guided run rather than errands the
+        # user should have to sequence themselves, so the button says so.
+        label = WIZARD_BUTTON_TEXT if step.action in ("setup", "format") else step.label
+        self.startButton.setText(label)
         self.startReasonLabel.setText(step.detail)
         # A blocked state has no action behind it, so show the reason instead of
         # a large dead button suggesting something that cannot be done.
@@ -397,6 +465,8 @@ class MainWindow(QMainWindow):
         self.inventory = inventory
         self.statusLabel.setText(inventory.status_line)
         self._sync_next_step()
+        self.wizardIntroPage.update_for(self.inventory)
+        self.wizardFinishPage.update_for(self.inventory)
         self._replace_setup_page(inventory)
         self._replace_format_page(inventory)
         self._replace_browse_page(inventory)
@@ -594,13 +664,17 @@ class MainWindow(QMainWindow):
         if self._running:
             return
         action = self._next_step.action
-        if action == "setup":
-            self.stack.setCurrentIndex(PAGE_SETUP)
-            return
-        if action == "format":
-            self.stack.setCurrentIndex(PAGE_FORMAT)
+        # Anything short of ready-to-back-up means there are steps to walk, and
+        # walking them one screen at a time is what the wizard is for.
+        if action in ("setup", "format"):
+            self.on_wizard_clicked()
             return
         if action != "backup":
+            return
+        self.on_backup_requested()
+
+    def on_backup_requested(self) -> None:
+        if self._running:
             return
         dialog = BackupDialog(self.inventory, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -616,7 +690,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(PAGE_SETUP)
 
     def on_setup_leave(self) -> None:
-        self._go_home()
+        self._leave_wizard() if self._wizard_active else self._go_home()
 
     def on_setup_apply(self) -> None:
         if self._running or not self.setupPage._can_apply():
@@ -629,7 +703,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(PAGE_FORMAT)
 
     def on_format_leave(self) -> None:
-        self._go_home()
+        self._leave_wizard() if self._wizard_active else self._go_home()
 
     def on_format_apply(self) -> None:
         if self._running or not self.formatPage._can_format():
@@ -860,17 +934,24 @@ class MainWindow(QMainWindow):
             self._go_home()
             return
         self.set_running(False)
-        self._go_home()
+        # Ask the disks again before judging: whether the new names took effect
+        # is exactly the question, and the inventory in hand predates them.
+        self.refresh()
         # The names are on the disk, but the kernel cannot re-read the table of
         # the disk it is running from. If udev did not pick the new names up we
         # must say so, because offering "Set up this computer" again is the loop
         # that made the app look broken.
         if self.inventory.unnamed_live:
             self._needs_reboot = True
+            self._leave_wizard()
             self._sync_next_step()
             self.append_log(SETUP_REBOOT_TEXT)
             return
         self.append_log(SETUP_DONE_TEXT)
+        if self._wizard_active:
+            self._wizard_advance()
+            return
+        self._go_home()
 
     def on_format_finished(self, code: int, stderr: str = "") -> None:
         if code != 0:
@@ -881,17 +962,22 @@ class MainWindow(QMainWindow):
             return
         self.set_running(False)
         self.refresh()
+        # Formatting runs bare mkfs, so the new filesystems get fresh random
+        # UUIDs and nothing is cloned yet. Telling the user to unplug here is
+        # both untrue and the opposite of what they need to do next, which is
+        # to back up onto the disk they just prepared.
+        self._clear_unplug()
+        if self._wizard_active:
+            # The wizard has its own ending that offers the same choice, so
+            # asking here as well would be asking twice.
+            self._wizard_advance()
+            return
         if describe_backup_route(self.inventory) is not None and self._ask_copy_now():
             self.stack.setCurrentIndex(PAGE_HOME)
             self._run_backup_with_fselection(
                 "-bootfix," + ",".join(self.inventory.live_functions)
             )
             return
-        # Formatting runs bare mkfs, so the new filesystems get fresh random
-        # UUIDs and nothing is cloned yet. Telling the user to unplug here is
-        # both untrue and the opposite of what they need to do next, which is
-        # to back up onto the disk they just prepared.
-        self._clear_unplug()
         self.stack.setCurrentIndex(PAGE_HOME)
 
     def on_mount_finished(self, code: int, stderr: str = "") -> None:

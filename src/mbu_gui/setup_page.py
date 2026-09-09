@@ -35,6 +35,13 @@ class SetupPage(QWidget):
 
         layout = QVBoxLayout(self)
 
+        # Blank unless the wizard is driving, so the page still reads correctly
+        # when an expert opens it straight from the main screen.
+        self.stepLabel = QLabel("")
+        self.stepLabel.setObjectName("stepLabel")
+        self.stepLabel.hide()
+        layout.addWidget(self.stepLabel)
+
         title = QLabel("Set up this computer")
         layout.addWidget(title)
 
@@ -102,6 +109,7 @@ class SetupPage(QWidget):
         layout.addLayout(buttons)
 
         self.setNameEdit.textChanged.connect(self._on_set_name_changed)
+        self.set_step("")
         self.confirmEdit.textChanged.connect(self._sync_enabled)
         self._fill_preview()
         self._sync_enabled()
@@ -131,6 +139,10 @@ class SetupPage(QWidget):
 
     def _can_apply(self) -> bool:
         return self.block_reason() is None
+
+    def set_step(self, text: str) -> None:
+        self.stepLabel.setText(text)
+        self.stepLabel.setVisible(bool(text))
 
     def _sync_enabled(self) -> None:
         reason = self.block_reason()

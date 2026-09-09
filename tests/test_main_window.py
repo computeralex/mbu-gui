@@ -2,13 +2,22 @@
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from dataclasses import replace
 from pathlib import Path
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication, QSizePolicy
 
 from mbu_gui.disks import load_lsblk
 from mbu_gui.logs import LastRun
-from mbu_gui.main_window import PAGE_FORMAT, PAGE_HOME, PAGE_SETUP, MainWindow, _icon_candidates
+from mbu_gui.main_window import (
+    PAGE_FORMAT,
+    PAGE_HOME,
+    PAGE_SETUP,
+    PAGE_WIZARD_FINISH,
+    PAGE_WIZARD_INTRO,
+    MainWindow,
+    _icon_candidates,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 _app = None
@@ -35,20 +44,24 @@ def test_window_opens_with_backup_ready():
     assert w.unplugBanner.isHidden()
 
 
-def test_unnamed_computer_offers_setup_instead_of_a_dead_button():
+def test_unnamed_computer_offers_the_wizard_instead_of_a_dead_button():
     """An unprepared computer must get a live button, not a greyed-out one.
 
     A disabled Start Backup with the explanation in a separate label reads as
-    a broken app; the button itself now offers the step that unblocks it.
+    a broken app. There is more than one step left here, so the button opens
+    the guided run rather than dropping the user on one page of it.
     """
     app()
     inv = load_lsblk((FIXTURES / "lsblk_unnamed.json").read_text())
     w = MainWindow(inventory=inv, last_run=None)
     assert w.startButton.isEnabled()
-    assert w.startButton.text() == "Set up this computer"
+    assert w.startButton.text() == "Take me through it"
     assert "nothing is erased" in w.startReasonLabel.text()
     w.startButton.click()
+    assert w.stack.currentIndex() == PAGE_WIZARD_INTRO
+    w.wizardIntroPage.startButton.click()
     assert w.stack.currentIndex() == PAGE_SETUP
+    assert w.setupPage.stepLabel.text() == "Step 1 of 3"
 
 
 def test_unsupported_computer_shows_no_button_at_all():
@@ -88,10 +101,14 @@ def test_missing_backup_disk_offers_prepare_and_says_to_replug():
     inv = replace(named, backup_sets=[], start_blocked_reason="Plug in the backup disk")
     w = MainWindow(inventory=inv, last_run=None)
     assert w.startButton.isEnabled()
-    assert w.startButton.text() == "Prepare a backup disk"
+    assert w.startButton.text() == "Take me through it"
     assert "plug in the disk you already prepared" in w.startReasonLabel.text().lower()
     w.startButton.click()
+    w.wizardIntroPage.startButton.click()
     assert w.stack.currentIndex() == PAGE_FORMAT
+    # Naming is already done, so the counter must not restart at one.
+    assert w.formatPage.stepLabel.text() == "Step 2 of 3"
+    assert "already named" in w.wizardIntroPage.resumeLabel.text()
 
 
 def test_naming_reports_plainly_and_says_what_comes_next():
@@ -143,6 +160,70 @@ def _runnable_window(inv):
         start_process=lambda argv: None,
         helper_path=Path("/usr/lib/mbu-gui/mbu-gui-helper"),
     )
+
+
+def test_the_wizard_walks_setup_then_prepare_then_the_backup_choice():
+    """One pass, without the user being sent back to the main screen between
+    steps to work out what to click next."""
+    app()
+    unnamed = load_lsblk((FIXTURES / "lsblk_unnamed.json").read_text())
+    named_no_disk = replace(
+        load_lsblk((FIXTURES / "lsblk_named.json").read_text()), backup_sets=[]
+    )
+    ready = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    stage = [named_no_disk]
+
+    w = MainWindow(
+        inventory=unnamed, last_run=None, reload_inventory=lambda: stage[0]
+    )
+    w.startButton.click()
+    w.wizardIntroPage.startButton.click()
+    assert w.stack.currentIndex() == PAGE_SETUP
+
+    w.on_label_live_finished(0)
+    assert w.stack.currentIndex() == PAGE_FORMAT
+    assert w.formatPage.stepLabel.text() == "Step 2 of 3"
+
+    stage[0] = ready
+    w.on_format_finished(0)
+    assert w.stack.currentIndex() == PAGE_WIZARD_FINISH
+    assert w.wizardFinishPage.stepLabel.text() == "Step 3 of 3"
+    assert "bak1" in w.wizardFinishPage.routeLabel.text()
+
+
+def test_the_wizard_can_be_finished_without_backing_up():
+    app()
+    ready = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = MainWindow(inventory=ready, last_run=None, reload_inventory=lambda: ready)
+    w.on_wizard_clicked()
+    w.wizardIntroPage.startButton.click()
+    assert w.stack.currentIndex() == PAGE_WIZARD_FINISH
+    w.wizardFinishPage.laterButton.click()
+    assert w.stack.currentIndex() == PAGE_HOME
+    assert not w._wizard_active
+
+
+def test_leaving_the_wizard_clears_the_step_counters():
+    """Otherwise an expert opening the page directly sees a stale 'Step 2 of 3'."""
+    app()
+    unnamed = load_lsblk((FIXTURES / "lsblk_unnamed.json").read_text())
+    w = MainWindow(inventory=unnamed, last_run=None)
+    w.startButton.click()
+    w.wizardIntroPage.startButton.click()
+    assert w.setupPage.stepLabel.text() == "Step 1 of 3"
+    w.setupPage.leaveButton.click()
+    assert w.stack.currentIndex() == PAGE_HOME
+    assert w.setupPage.stepLabel.text() == ""
+    assert w.setupPage.stepLabel.isHidden()
+
+
+def test_an_unsupported_computer_is_never_walked_into_the_wizard():
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_mbr_live.json").read_text())
+    w = MainWindow(inventory=inv, last_run=None)
+    w.on_wizard_clicked()
+    w.wizardIntroPage.startButton.click()
+    assert w.stack.currentIndex() == PAGE_HOME
 
 
 def test_a_long_path_does_not_widen_the_window():
