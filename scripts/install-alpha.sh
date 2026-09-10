@@ -27,9 +27,11 @@ cat <<'EOF'
 
   MBU GUI  —  ALPHA
 
-  This is 0.1.0-alpha.1. It can erase a disk. It is a mirror, not a
-  file archive: what you delete here is deleted from the backup on
-  the next run.
+  This is 0.1.0-alpha.1, for testing only. It can erase a disk.
+  Make a copy of anything you care about before you continue.
+
+  It is a mirror, not a file archive: what you delete here is
+  deleted from the backup on the next run.
 
   You need a spare disk you are willing to lose. The computer must
   be UEFI + GPT. Turn Secure Boot off before you boot the backup
