@@ -3,8 +3,10 @@
 **Alpha — for testing only.** This can erase a disk. Make a copy of anything
 you care about before you run it. It is not finished software.
 
+Install with:
+
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/computeralex/mbu-gui/fix/p0-disk-safety/scripts/install-alpha.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/computeralex/mbu-gui/main/scripts/install-alpha.sh)"
 ```
 
 That line prints the warning and waits for you to type `ALPHA`. Winux /
