@@ -1,8 +1,8 @@
 from pathlib import Path
-from types import SimpleNamespace
 import json
 import os
-import stat
+
+import pytest
 
 from mbu_gui_helper.cli import main
 
@@ -16,6 +16,10 @@ def _env(tmp_path):
         "MBU_GUI_MBU_DIR": str(FAKE),
         "PATH": os.environ.get("PATH", "/usr/bin"),
     }
+
+
+def _state(tmp_path):
+    return tmp_path / "var-lib-mbu-gui"
 
 
 def _lsblk(name="lsblk_named.json"):
@@ -35,9 +39,13 @@ def test_backup_runs_mbup_then_clean(tmp_path, capsys):
     assert "fake-mbuclean" in out
 
 
+SDA_ID = "wwn:0x5000aaaa1111bbbb"  # sda reports a wwn, which wins over its serial
+SDB_ID = "serial:usb1111backupb"
+
+
 def test_format_disk_refuses_live(tmp_path, capsys):
     code = main(
-        ["format-disk", "--disk", "sda", "--pset", "bak9"],
+        ["format-disk", "--disk", "sda", "--disk-id", SDA_ID, "--pset", "bak9"],
         environ=_env(tmp_path),
         lsblk_data=_lsblk(),
     )
@@ -47,7 +55,7 @@ def test_format_disk_refuses_live(tmp_path, capsys):
 
 def test_format_disk_refuses_when_live_unknown(tmp_path, capsys):
     code = main(
-        ["format-disk", "--disk", "sdb", "--pset", "bak9"],
+        ["format-disk", "--disk", "sdb", "--disk-id", SDB_ID, "--pset", "bak9"],
         environ=_env(tmp_path),
         lsblk_data=_lsblk("lsblk_no_root.json"),
     )
@@ -55,9 +63,33 @@ def test_format_disk_refuses_when_live_unknown(tmp_path, capsys):
     assert "contains /" in capsys.readouterr().out
 
 
+def test_format_disk_refuses_disk_holding_efi_and_swap(tmp_path, capsys):
+    """sda has no / on it, but it carries /boot/efi and active swap."""
+    calls = []
+    code = main(
+        ["format-disk", "--disk", "sda", "--disk-id", SDA_ID, "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_split_boot.json"),
+        run=lambda argv, **k: calls.append(list(argv)) or 0,
+    )
+    assert code == 2
+    assert "running system is using" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_format_disk_refuses_second_member_of_spanning_vg(tmp_path, capsys):
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", "wwn:0x5000aaaa1111cccc", "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_vg_spans_two_disks.json"),
+    )
+    assert code == 2
+    assert "running system is using" in capsys.readouterr().out
+
+
 def test_format_disk_refuses_luks_lvm_live_sda(tmp_path, capsys):
     code = main(
-        ["format-disk", "--disk", "sda", "--pset", "bak9"],
+        ["format-disk", "--disk", "sda", "--disk-id", SDA_ID, "--pset", "bak9"],
         environ=_env(tmp_path),
         lsblk_data=_lsblk("lsblk_luks_lvm.json"),
     )
@@ -67,7 +99,7 @@ def test_format_disk_refuses_luks_lvm_live_sda(tmp_path, capsys):
 
 def test_format_disk_allows_sdb_when_root_is_luks_lvm(tmp_path, capsys):
     code = main(
-        ["format-disk", "--disk", "sdb", "--pset", "bak9"],
+        ["format-disk", "--disk", "sdb", "--disk-id", SDB_ID, "--pset", "bak9"],
         environ=_env(tmp_path),
         lsblk_data=_lsblk("lsblk_luks_lvm.json"),
     )
@@ -79,7 +111,7 @@ def test_format_disk_allows_sdb_when_root_is_luks_lvm(tmp_path, capsys):
 
 def test_format_disk_allows_sdb(tmp_path, capsys):
     code = main(
-        ["format-disk", "--disk", "sdb", "--pset", "bak1"],
+        ["format-disk", "--disk", "sdb", "--disk-id", SDB_ID, "--pset", "bak1"],
         environ=_env(tmp_path),
         lsblk_data=_lsblk(),
     )
@@ -89,6 +121,49 @@ def test_format_disk_allows_sdb(tmp_path, capsys):
     assert "mbuFormatDisk" in out
     assert "disk=sdb" in out
     assert "fake-mbuclean" in out
+
+
+def test_format_disk_refuses_when_device_renamed(tmp_path, capsys):
+    """GUI saw the target as sdb; by now that hardware id is sdc."""
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", "serial:usb2222backupc", "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_two_backups.json"),
+    )
+    assert code == 2
+    assert "changed device name" in capsys.readouterr().out
+
+
+def test_format_disk_refuses_unknown_hardware_id(tmp_path, capsys):
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", "serial:notplugged", "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+    )
+    assert code == 2
+    assert "no attached disk has that hardware id" in capsys.readouterr().out
+
+
+def test_format_disk_refuses_empty_hardware_id(tmp_path, capsys):
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", "", "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+    )
+    assert code == 2
+    assert "no serial number" in capsys.readouterr().out
+
+
+def test_format_disk_does_not_run_mbu_when_id_check_fails(tmp_path):
+    calls = []
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", "serial:notplugged", "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda argv, **kwargs: calls.append(list(argv)) or 0,
+    )
+    assert code == 2
+    assert calls == []
 
 
 def test_format_disk_cleans_after_format_failure(tmp_path):
@@ -101,7 +176,7 @@ def test_format_disk_cleans_after_format_failure(tmp_path):
         return 0
 
     code = main(
-        ["format-disk", "--disk", "sdb", "--pset", "bak1"],
+        ["format-disk", "--disk", "sdb", "--disk-id", SDB_ID, "--pset", "bak1"],
         environ=_env(tmp_path),
         lsblk_data=_lsblk(),
         run=run,
@@ -143,62 +218,386 @@ def test_label_live_sfdisk_argv(tmp_path):
     assert captured[0] == ["sfdisk", "--part-label", "/dev/sda", "2", "main-root"]
 
 
-def test_chown_state_dirs_to_pkexec_uid(tmp_path, monkeypatch):
-    home = tmp_path / "axel"
-    owned = []
-
-    def getpwuid(uid):
-        assert uid == 1000
-        return SimpleNamespace(pw_dir=str(home), pw_gid=1000)
-
-    def fake_chown(path, uid, gid, follow_symlinks=True):
-        owned.append((str(path), uid, gid, follow_symlinks))
-
-    monkeypatch.setattr("mbu_gui.paths.pwd.getpwuid", getpwuid)
-    monkeypatch.setattr("mbu_gui_helper.cli.pwd.getpwuid", getpwuid)
-    monkeypatch.setattr("mbu_gui_helper.cli.os.chown", fake_chown)
-    env = _env(tmp_path)
-    env["PKEXEC_UID"] = "1000"
-    state = home / ".local/share/mbu-gui"
-    (state / "log").mkdir(parents=True)
-    (state / "out").mkdir(parents=True)
-    mount = state / "mount"
-    mount.mkdir(parents=True)
-    trapped = mount / "bak1-root"
-    trapped.mkdir()
-    (trapped / "passwd").write_text("should not be chowned")
-    (state / "log" / "mbu.log").write_text("ok")
-    (state / "out" / "table").write_text("t")
+def test_first_backup_records_this_machine(tmp_path):
+    state = _state(tmp_path)
     code = main(
-        ["clean"],
-        environ=env,
+        ["backup", "--fselection", "root"],
+        environ=_env(tmp_path),
         lsblk_data=_lsblk(),
         run=lambda *a, **k: 0,
+        state_dir=state,
     )
     assert code == 0
-    chowned = {Path(p) for p, uid, gid, _ in owned}
-    assert state in chowned
-    assert state / "log" in chowned
-    assert state / "out" in chowned
-    assert state / "mount" in chowned
-    assert state / "log" / "mbu.log" in chowned
-    assert state / "out" / "table" in chowned
-    assert trapped not in chowned
-    assert trapped / "passwd" not in chowned
-    assert all(uid == 1000 and gid == 1000 and follow is False for _, uid, gid, follow in owned)
+    record = json.loads((state / "machine.json").read_text())
+    assert record["machine_set"] == "main"
+    assert record["disk_id"] == "wwn:0x5000aaaa1111bbbb"
 
 
-def test_no_chown_without_pkexec_uid(tmp_path, monkeypatch):
-    owned = []
-    monkeypatch.setattr(
-        "mbu_gui_helper.cli.os.chown",
-        lambda path, uid, gid: owned.append(path),
+def test_backup_refused_when_running_from_the_clone(tmp_path, capsys):
+    """Booted from bak1 with the internal disk attached: roles are inverted."""
+    state = _state(tmp_path)
+    state.mkdir(parents=True)
+    (state / "machine.json").write_text(json.dumps({"machine_set": "main"}) + "\n")
+    inverted = _lsblk()
+    # Swap which disk carries /: the backup set bak1 is now the running root.
+    for dev in inverted["blockdevices"]:
+        for child in dev.get("children") or []:
+            if child.get("mountpoint") == "/":
+                child["mountpoint"] = None
+            if child.get("partlabel") == "bak1-root":
+                child["mountpoint"] = "/"
+    calls = []
+    code = main(
+        ["backup", "--fselection", "-bootfix,root"],
+        environ=_env(tmp_path),
+        lsblk_data=inverted,
+        run=lambda argv, **k: calls.append(list(argv)) or 0,
+        state_dir=state,
     )
+    assert code == 2
+    out = capsys.readouterr().out
+    assert "recorded as set `main`" in out
+    assert "running from set `bak1`" in out
+    assert calls == []
+    assert not (state / "backup-incomplete").exists()
+
+
+def test_backup_allowed_when_record_matches(tmp_path):
+    state = _state(tmp_path)
+    state.mkdir(parents=True)
+    (state / "machine.json").write_text(json.dumps({"machine_set": "main"}) + "\n")
+    code = main(
+        ["backup", "--fselection", "root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda *a, **k: 0,
+        state_dir=state,
+    )
+    assert code == 0
+
+
+def test_corrupt_machine_record_refuses_backup(tmp_path, capsys):
+    state = _state(tmp_path)
+    state.mkdir(parents=True)
+    (state / "machine.json").write_text("not json")
+    calls = []
+    code = main(
+        ["backup", "--fselection", "root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda argv, **k: calls.append(list(argv)) or 0,
+        state_dir=state,
+    )
+    assert code == 2
+    assert "Refusing to back up" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_label_live_records_the_chosen_set(tmp_path):
+    state = _state(tmp_path)
+    code = main(
+        ["label-live", "--labels", "sda2=newname-root,sda1=newname-efi"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_unnamed.json"),
+        run=lambda *a, **k: 0,
+        state_dir=state,
+    )
+    assert code == 0
+    record = json.loads((state / "machine.json").read_text())
+    assert record["machine_set"] == "newname"
+
+
+def test_backup_records_the_group_to_stop_and_clears_it_after(tmp_path):
+    state = _state(tmp_path)
+    record = state / "backup-run.json"
+    seen = {}
+
+    def run(argv, **kw):
+        on_start = kw.get("on_start")
+        if on_start is not None:
+            on_start(31337)
+            seen["while_running"] = json.loads(record.read_text())
+        return 0
+
+    code = main(
+        ["backup", "--fselection", "efi,root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=run,
+        state_dir=state,
+    )
+    assert code == 0
+    assert seen["while_running"]["pgid"] == 31337
+    # A record left behind is a pid waiting to be reused by something else.
+    assert not record.exists()
+
+
+def test_a_crashed_backup_still_clears_the_group_record(tmp_path):
+    state = _state(tmp_path)
+    record = state / "backup-run.json"
+
+    def run(argv, **kw):
+        on_start = kw.get("on_start")
+        if on_start is None:
+            return 0
+        on_start(4242)
+        raise OSError("mbup died")
+
+    with pytest.raises(OSError):
+        main(
+            ["backup", "--fselection", "efi"],
+            environ=_env(tmp_path),
+            lsblk_data=_lsblk(),
+            run=run,
+            state_dir=state,
+        )
+    assert not record.exists()
+
+
+def test_cancel_with_nothing_running_reports_instead_of_signalling(tmp_path, capsys):
+    code = main(
+        ["cancel"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda *a, **k: 0,
+        state_dir=_state(tmp_path),
+    )
+    assert code == 3
+    assert "No backup is running" in capsys.readouterr().out
+
+
+def test_label_live_refreshes_what_the_kernel_reports(tmp_path):
+    """New names must be visible without a reboot.
+
+    sfdisk cannot make the kernel re-read the table of the disk it is running
+    from, so lsblk keeps reporting the old names and the GUI asks the user to
+    set the computer up again, forever.
+    """
+    calls = []
+    code = main(
+        ["label-live", "--labels", "sda2=newname-root,sda1=newname-efi"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_unnamed.json"),
+        run=lambda argv, **k: calls.append(list(argv)) or 0,
+        state_dir=_state(tmp_path),
+    )
+    assert code == 0
+    assert ["partx", "-u", "/dev/sda"] in calls
+    assert ["udevadm", "settle"] in calls
+    # The refresh is pointless before the names are actually written.
+    assert calls.index(["partx", "-u", "/dev/sda"]) > max(
+        i for i, c in enumerate(calls) if c[0] == "sfdisk"
+    )
+
+
+def test_a_refresh_that_fails_does_not_fail_the_naming(tmp_path):
+    """partx failing costs the user a reboot, not their partition names.
+
+    The table is already written by then, so reporting failure would send the
+    user back through setup to redo work that succeeded.
+    """
+    state = _state(tmp_path)
+    code = main(
+        ["label-live", "--labels", "sda2=newname-root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_unnamed.json"),
+        run=lambda argv, **k: 0 if argv[0] == "sfdisk" else 1,
+        state_dir=state,
+    )
+    assert code == 0
+    assert json.loads((state / "machine.json").read_text())["machine_set"] == "newname"
+
+
+def test_failed_label_live_does_not_record(tmp_path):
+    state = _state(tmp_path)
+    code = main(
+        ["label-live", "--labels", "sda2=newname-root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk("lsblk_unnamed.json"),
+        run=lambda *a, **k: 9,
+        state_dir=state,
+    )
+    assert code == 9
+    assert not (state / "machine.json").exists()
+
+
+def test_backup_marker_written_before_run_and_cleared_on_success(tmp_path):
+    state = _state(tmp_path)
+    marker = state / "backup-incomplete"
+    seen = {}
+
+    def run(argv, **kwargs):
+        if argv[0] == "./mbup":
+            seen["marker_during_run"] = marker.exists()
+        return 0
+
+    code = main(
+        ["backup", "--fselection", "-bootfix,root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=run,
+        state_dir=state,
+    )
+    assert code == 0
+    assert seen["marker_during_run"] is True
+    assert not marker.exists()
+
+
+def test_backup_marker_survives_a_failed_run(tmp_path):
+    state = _state(tmp_path)
+    marker = state / "backup-incomplete"
+    code = main(
+        ["backup", "--fselection", "-bootfix,root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda argv, **k: 5 if argv[0] == "./mbup" else 0,
+        state_dir=state,
+    )
+    assert code == 5
+    assert marker.exists()
+
+
+def test_backup_marker_survives_a_failed_unmount_after_a_good_copy(tmp_path):
+    """mbuclean failing must not be reported as safe to leave plugged in."""
+    state = _state(tmp_path)
+    marker = state / "backup-incomplete"
+    code = main(
+        ["backup", "--fselection", "root"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda argv, **k: 3 if argv[0] == "./mbuclean" else 0,
+        state_dir=state,
+    )
+    assert code == 3
+    assert marker.exists()
+
+
+def test_format_does_not_write_the_backup_marker(tmp_path):
+    """Formatting does not clone UUIDs, so it must not raise the warning."""
+    state = _state(tmp_path)
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", SDB_ID, "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda *a, **k: 0,
+        state_dir=state,
+    )
+    assert code == 0
+    assert not (state / "backup-incomplete").exists()
+
+
+def test_state_dirs_are_created_under_root_owned_state(tmp_path):
+    state = _state(tmp_path)
     code = main(
         ["clean"],
         environ=_env(tmp_path),
         lsblk_data=_lsblk(),
         run=lambda *a, **k: 0,
+        state_dir=state,
     )
     assert code == 0
-    assert owned == []
+    for sub in ("log", "out", "mount"):
+        assert (state / sub).is_dir()
+    # nothing was created in the calling user's home
+    assert not (tmp_path / "home" / ".local").exists()
+
+
+def test_state_dir_ignores_home_env(tmp_path):
+    """PKEXEC_UID/HOME must not steer root's writes into a user's home."""
+    env = _env(tmp_path)
+    env["PKEXEC_UID"] = "1000"
+    state = _state(tmp_path)
+    code = main(
+        ["clean"],
+        environ=env,
+        lsblk_data=_lsblk(),
+        run=lambda *a, **k: 0,
+        state_dir=state,
+    )
+    assert code == 0
+    assert (state / "log").is_dir()
+    assert not (tmp_path / "home" / ".local").exists()
+
+
+def test_refuses_symlinked_state_subdirectory(tmp_path, capsys):
+    """A symlinked log dir would aim root's MBU log writes anywhere."""
+    state = _state(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    state.mkdir(parents=True)
+    (state / "log").symlink_to(elsewhere, target_is_directory=True)
+    calls = []
+    code = main(
+        ["clean"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda argv, **k: calls.append(list(argv)) or 0,
+        state_dir=state,
+    )
+    assert code == 2
+    assert "Refusing to use a state path" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_refuses_symlinked_state_root(tmp_path, capsys):
+    state = _state(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.symlink_to(elsewhere, target_is_directory=True)
+    code = main(
+        ["clean"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda *a, **k: 0,
+        state_dir=state,
+    )
+    assert code == 2
+    assert "Refusing to use a state path" in capsys.readouterr().out
+
+
+def test_format_table_is_cleared_before_use_and_lives_outside_home(tmp_path):
+    state = _state(tmp_path)
+    table = state / "out" / "mbuformat.table"
+    table.parent.mkdir(parents=True)
+    table.write_text("planted layout that root must not reuse\n")
+    seen = {}
+
+    def run(argv, **kwargs):
+        if "mbuFormatTableWrite" in argv:
+            seen["table_at_generate"] = table.exists()
+        if "mbuFormatDisk" in argv:
+            seen["tablefile_arg"] = [a for a in argv if a.startswith("tablefile=")]
+        return 0
+
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", SDB_ID, "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=run,
+        state_dir=state,
+    )
+    assert code == 0
+    assert seen["table_at_generate"] is False
+    assert seen["tablefile_arg"] == [f"tablefile={table}"]
+    assert ".local" not in str(table)
+
+
+def test_refuses_symlinked_format_table(tmp_path, capsys):
+    state = _state(tmp_path)
+    (state / "out").mkdir(parents=True)
+    target = tmp_path / "victim.conf"
+    target.write_text("important\n")
+    (state / "out" / "mbuformat.table").symlink_to(target)
+    calls = []
+    code = main(
+        ["format-disk", "--disk", "sdb", "--disk-id", SDB_ID, "--pset", "bak9"],
+        environ=_env(tmp_path),
+        lsblk_data=_lsblk(),
+        run=lambda argv, **k: calls.append(list(argv)) or 0,
+        state_dir=state,
+    )
+    assert code == 2
+    assert "Refusing to use a state path" in capsys.readouterr().out
+    assert calls == []
+    assert target.read_text() == "important\n"

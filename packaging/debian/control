@@ -1,9 +1,9 @@
 Package: mbu-gui
-Version: 0.1.0
+Version: 0.1.0~alpha1
 Section: admin
 Priority: optional
 Architecture: all
 Maintainer: Alex Mohr
-Depends: python3, policykit-1, rsync, gdisk, e2fsprogs, util-linux, coreutils, bash
-Description: Window for Ted Merrill's MBU bootable backups
- Wrapper GUI for MBU on Ubuntu 24.04 / Winux. Bundles MBU scripts.
+Depends: python3, policykit-1, rsync, gdisk, e2fsprogs, util-linux, udev, coreutils, bash
+Description: Window for Ted Merrill's MBU bootable backups (alpha)
+ Alpha GUI for MBU on Ubuntu 24.04 / Winux. Spare disk only. Bundles MBU scripts.

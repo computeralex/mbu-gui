@@ -1,0 +1,110 @@
+{
+  "_comment": "one LVM volume group spanning sda and sdb carries /; lsblk repeats the LV under each PV. sdc is a clean spare.",
+  "blockdevices": [
+    {
+      "name": "sda",
+      "path": "/dev/sda",
+      "type": "disk",
+      "size": "256G",
+      "model": "Samsung SSD",
+      "serial": "SYS0000INTERNAL",
+      "wwn": "0x5000aaaa1111bbbb",
+      "ptuuid": "11111111-1111",
+      "children": [
+        {
+          "name": "sda1",
+          "path": "/dev/sda1",
+          "type": "part",
+          "size": "512M",
+          "fstype": "vfat",
+          "mountpoint": "/boot/efi",
+          "partlabel": "main-efi",
+          "partn": 1,
+          "uuid": "AAAA"
+        },
+        {
+          "name": "sda2",
+          "path": "/dev/sda2",
+          "type": "part",
+          "size": "255G",
+          "fstype": "LVM2_member",
+          "mountpoint": null,
+          "partlabel": "main-pv1",
+          "partn": 2,
+          "uuid": "BBBB",
+          "children": [
+            {
+              "name": "vg-root",
+              "path": "/dev/mapper/vg-root",
+              "type": "lvm",
+              "size": "400G",
+              "fstype": "ext4",
+              "mountpoint": "/",
+              "partlabel": null,
+              "partn": null,
+              "uuid": "EEEE"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sdb",
+      "path": "/dev/sdb",
+      "type": "disk",
+      "size": "256G",
+      "model": "Samsung SSD",
+      "serial": "SYS0001INTERNAL",
+      "wwn": "0x5000aaaa1111cccc",
+      "ptuuid": "55555555-5555",
+      "children": [
+        {
+          "name": "sdb1",
+          "path": "/dev/sdb1",
+          "type": "part",
+          "size": "256G",
+          "fstype": "LVM2_member",
+          "mountpoint": null,
+          "partlabel": "main-pv2",
+          "partn": 1,
+          "uuid": "CCCC",
+          "children": [
+            {
+              "name": "vg-root",
+              "path": "/dev/mapper/vg-root",
+              "type": "lvm",
+              "size": "400G",
+              "fstype": "ext4",
+              "mountpoint": "/",
+              "partlabel": null,
+              "partn": null,
+              "uuid": "EEEE"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sdc",
+      "path": "/dev/sdc",
+      "type": "disk",
+      "size": "500G",
+      "model": "Backup Drive",
+      "serial": "USB2222BACKUPC",
+      "ptuuid": "33333333-3333",
+      "children": [
+        {
+          "name": "sdc1",
+          "path": "/dev/sdc1",
+          "type": "part",
+          "size": "500G",
+          "fstype": "ext4",
+          "mountpoint": null,
+          "partlabel": "bak1-root",
+          "partn": 1,
+          "uuid": "DDDD"
+        }
+      ]
+    }
+  ]
+}

@@ -1,35 +1,70 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QFont, QFontMetrics, QIcon
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from mbu_gui.backup_dialog import BackupDialog
+from mbu_gui.backup_dialog import UNKNOWN_DESTINATION_TEXT, BackupDialog
 from mbu_gui.browse_page import BrowsePage, UNMOUNT_FAIL_TEXT
-from mbu_gui.disks import Inventory
+from mbu_gui.disks import (
+    Inventory,
+    RESTART_TO_FINISH_TEXT,
+    describe_backup_route,
+    live_disk_unsupported,
+    next_step,
+)
 from mbu_gui.format_page import FormatPage
 from mbu_gui.helper_client import explain_helper_failure, pkexec_argv, which_helper
-from mbu_gui.logs import LastRun, current_file_from_line, last_run_label
+from mbu_gui.logs import (
+    LastRun,
+    backup_summary,
+    copied_bytes_from_lines,
+    current_file_from_line,
+    last_run_label,
+    plain_label_line,
+    progress_label,
+    route_sets_from_lines,
+    strip_ansi,
+    sync_target,
+)
 from mbu_gui.process import LineProcess
 from mbu_gui.setup_page import SetupPage
+from mbu_gui.wizard import (
+    STEP_BACKUP,
+    STEP_FORMAT,
+    STEP_SETUP,
+    WIZARD_BUTTON_TEXT,
+    current_step,
+)
+from mbu_gui.wizard_page import WizardFinishPage, WizardIntroPage
 
 UNPLUG_BANNER_TEXT = (
     "Unplug the backup disk now.\n"
     "Duplicate UUIDs confuse Linux if you leave it plugged in."
+)
+UNPLUG_UNFINISHED_TEXT = (
+    "The backup did not finish. Unplug the backup disk anyway.\n"
+    "MBU clones UUIDs one partition at a time, so this disk may already share "
+    "UUIDs with this computer. Leaving it plugged in can make Linux boot from "
+    "the wrong disk."
 )
 COPY_NOW_TEXT = "Copy everything now"
 SKIP_TEXT = "Skip"
@@ -38,8 +73,34 @@ PAGE_HOME = 0
 PAGE_SETUP = 1
 PAGE_FORMAT = 2
 PAGE_BROWSE = 3
+PAGE_WIZARD_INTRO = 4
+PAGE_WIZARD_FINISH = 5
 
 CLOSE_MOUNTED_TEXT = "Unmount the backup before closing."
+# Not "data may be lost": this computer is never written to. What is at stake is
+# the backup already on the destination disk, which MBU overwrites in place as
+# it copies, so a half-finished run has damaged it without replacing it.
+CANCEL_CONFIRM_TITLE = "Stop the backup?"
+CANCEL_CONFIRM_TEXT = (
+    "Nothing on this computer is changed by stopping.\n\n"
+    "The backup disk is another matter. MBU copies over the previous backup as "
+    "it goes, so that older backup is already part way overwritten and will not "
+    "be bootable. Stopping now leaves the disk with neither a finished new "
+    "backup nor a usable old one, and you will need to run a full backup again."
+)
+CANCEL_YES_TEXT = "Stop the backup"
+CANCEL_NO_TEXT = "Let it finish"
+CLOSE_RUNNING_TEXT = (
+    "A backup is running. Closing the window would not stop it, because the "
+    "copying runs with administrator rights outside this window.\n\n"
+    "Stop the backup first, or let it finish."
+)
+CANCEL_REQUESTED_TEXT = "Stopping the backup..."
+SETUP_DONE_TEXT = (
+    "This computer is named and ready. Next: prepare a backup disk, which "
+    "erases a spare disk and sets it up to receive backups."
+)
+SETUP_REBOOT_TEXT = RESTART_TO_FINISH_TEXT
 
 _HELPER_NOUNS = {
     "backup": "backup",
@@ -48,6 +109,33 @@ _HELPER_NOUNS = {
     "label-live": "label",
     "clean": "unmount",
 }
+
+
+def window_size_for_screen(available_width: int, available_height: int) -> tuple[int, int]:
+    """Initial size that fits a laptop/VM desktop without clipping the banner.
+
+    available_* is QScreen.availableGeometry(), which already excludes the
+    taskbar. Leave a little for the title bar so the frame stays on screen.
+    """
+    chrome = 32
+    max_w = max(available_width, 1)
+    max_h = max(available_height - chrome, 1)
+    width = min(720, max_w)
+    # The log starts hidden, so 560 was mostly empty air that pushed the
+    # unplug banner under the taskbar on a 768-tall guest.
+    preferred_h = 440
+    height = min(preferred_h, max_h)
+    return width, height
+
+
+class _LogView(QPlainTextEdit):
+    """A log that can appear without asking the window to grow."""
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 0)
+
+    def sizeHint(self) -> QSize:
+        return QSize(0, 0)
 
 
 def _icon_candidates() -> tuple[Path, ...]:
@@ -79,7 +167,10 @@ class MainWindow(QMainWindow):
         reload_inventory: Callable[[], Inventory] | None = None,
         reload_last_run: Callable[[], LastRun | None] | None = None,
         ask_copy_now: Callable[[], bool] | None = None,
+        ask_cancel: Callable[[], bool] | None = None,
+        start_cancel: Callable[[list[str]], None] | None = None,
         open_dir: Callable[[str], None] | None = None,
+        backup_unfinished: bool = False,
         parent=None,
     ):
         super().__init__(parent)
@@ -92,11 +183,23 @@ class MainWindow(QMainWindow):
         self.reload_inventory = reload_inventory
         self.reload_last_run = reload_last_run
         self.ask_copy_now = ask_copy_now
+        self.ask_cancel = ask_cancel
+        self.start_cancel = start_cancel
+        self._cancel_process: LineProcess | None = None
+        self._cancelling = False
+        self._wizard_active = False
         self.open_dir = open_dir
         self._running = False
         self._helper_output: list[str] = []
         self._helper_kind = "backup"
         self._line_process: LineProcess | None = None
+        self._backup_unfinished = backup_unfinished
+        self._live_disk_usable = live_disk_unsupported(inventory) is None
+        self._needs_reboot = False
+        self._phases_total = 0
+        self._phases_done = 0
+        self._phase_files = 0
+        self._phase_target = ""
 
         self.setWindowTitle("MBU Backup")
         icon = _icon_path()
@@ -106,10 +209,12 @@ class MainWindow(QMainWindow):
         self.homePage = QWidget()
         self.homePage.setObjectName("homePage")
         layout = QVBoxLayout(self.homePage)
+        layout.setSpacing(4)
+        layout.setContentsMargins(12, 8, 12, 8)
 
         title = QLabel("MBU Backup")
         title_font = QFont(title.font())
-        title_font.setPointSize(title_font.pointSize() + 6)
+        title_font.setPointSize(title_font.pointSize() + 3)
         title_font.setBold(True)
         title.setFont(title_font)
         layout.addWidget(title)
@@ -122,18 +227,30 @@ class MainWindow(QMainWindow):
         self.lastRunLabel.setObjectName("lastRunLabel")
         layout.addWidget(self.lastRunLabel)
 
-        self.startButton = QPushButton("Start Backup")
+        self._next_step = next_step(inventory)
+
+        self.startButton = QPushButton(self._next_step.label)
         self.startButton.setObjectName("startButton")
         start_font = QFont(self.startButton.font())
-        start_font.setPointSize(start_font.pointSize() + 4)
+        start_font.setPointSize(start_font.pointSize() + 2)
         start_font.setBold(True)
         self.startButton.setFont(start_font)
-        self.startButton.setMinimumHeight(48)
-        self.startButton.setEnabled(inventory.start_blocked_reason is None)
+        self.startButton.setMinimumHeight(36)
+        self.startButton.setEnabled(self._next_step.enabled)
         self.startButton.clicked.connect(self.on_start_clicked)
         layout.addWidget(self.startButton)
 
-        self.startReasonLabel = QLabel(inventory.start_blocked_reason or "")
+        self.blockedHeadlineLabel = QLabel("")
+        self.blockedHeadlineLabel.setObjectName("blockedHeadlineLabel")
+        self.blockedHeadlineLabel.setWordWrap(True)
+        headline_font = QFont(self.blockedHeadlineLabel.font())
+        headline_font.setPointSize(headline_font.pointSize() + 3)
+        headline_font.setBold(True)
+        self.blockedHeadlineLabel.setFont(headline_font)
+        self.blockedHeadlineLabel.hide()
+        layout.addWidget(self.blockedHeadlineLabel)
+
+        self.startReasonLabel = QLabel(self._next_step.detail)
         self.startReasonLabel.setObjectName("startReasonLabel")
         self.startReasonLabel.setWordWrap(True)
         layout.addWidget(self.startReasonLabel)
@@ -153,13 +270,50 @@ class MainWindow(QMainWindow):
         secondary.addWidget(self.browseButton)
         layout.addLayout(secondary)
 
+        progress_row = QHBoxLayout()
+        self.progressBar = QProgressBar()
+        self.progressBar.setObjectName("progressBar")
+        self.progressBar.setTextVisible(True)
+        self.cancelButton = QPushButton("Stop")
+        self.cancelButton.setObjectName("cancelButton")
+        self.cancelButton.clicked.connect(self.on_cancel_clicked)
+        progress_row.addWidget(self.progressBar, 1)
+        progress_row.addWidget(self.cancelButton)
+        self.progressBar.hide()
+        self.cancelButton.hide()
+
+        self.summaryLabel = QLabel("")
+        self.summaryLabel.setObjectName("summaryLabel")
+        self.summaryLabel.setWordWrap(True)
+        self.summaryLabel.hide()
+
+        self.detailsButton = QPushButton("See details")
+        self.detailsButton.setObjectName("detailsButton")
+        self.detailsButton.setFlat(True)
+        self.detailsButton.clicked.connect(self.on_details_clicked)
+
         self.currentFileLabel = QLabel("")
         self.currentFileLabel.setObjectName("currentFileLabel")
+        # A deep path is wider than the window, and a label reports its full
+        # text width as its preferred size, so the layout grew the window on
+        # every longer path. Ignore that preference and shorten the text to fit.
+        self.currentFileLabel.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        self.currentFileLabel.setMinimumWidth(0)
+        self.currentFileLabel.hide()
+        self._current_file = ""
 
-        self.logView = QPlainTextEdit()
+        self.logView = _LogView()
         self.logView.setObjectName("logView")
         self.logView.setReadOnly(True)
-        self.logView.setMinimumHeight(160)
+        self.logView.setMinimumHeight(0)
+        self.logView.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        # Ignored so showing the log cannot lift the window via sizeHint.
+        self.logView.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored
+        )
+        self.logView.hide()
 
         self.unplugBanner = QLabel(UNPLUG_BANNER_TEXT)
         self.unplugBanner.setObjectName("unplugBanner")
@@ -171,6 +325,8 @@ class MainWindow(QMainWindow):
             "background-color: #F4D03F; color: #000000; font-weight: bold; padding: 12px;"
         )
         self.unplugBanner.hide()
+        if backup_unfinished:
+            self.show_unplug(True, text=UNPLUG_UNFINISHED_TEXT)
 
         self.setupPage = SetupPage(inventory)
         self.setupPage.setObjectName("setupPage")
@@ -189,20 +345,101 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.setupPage)
         self.stack.addWidget(self.formatPage)
         self.stack.addWidget(self.browsePage)
+        self.wizardIntroPage = WizardIntroPage(inventory)
+        self.wizardIntroPage.setObjectName("wizardIntroPage")
+        self.wizardFinishPage = WizardFinishPage(inventory)
+        self.wizardFinishPage.setObjectName("wizardFinishPage")
+        self._wire_wizard_pages()
+        self.stack.addWidget(self.wizardIntroPage)
+        self.stack.addWidget(self.wizardFinishPage)
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
+        root_layout.setSpacing(6)
+        root_layout.setContentsMargins(9, 8, 9, 8)
         root_layout.addWidget(self.stack, 1)
-        root_layout.addWidget(self.currentFileLabel)
-        root_layout.addWidget(self.logView)
+        root_layout.addLayout(progress_row)
+        root_layout.addWidget(self.summaryLabel)
+        self.detailsPanel = QWidget()
+        self.detailsPanel.setObjectName("detailsPanel")
+        details_layout = QVBoxLayout(self.detailsPanel)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        details_layout.setSpacing(4)
+        details_row = QHBoxLayout()
+        details_row.addWidget(self.detailsButton)
+        details_row.addStretch(1)
+        details_layout.addLayout(details_row)
+        details_layout.addWidget(self.currentFileLabel)
+        details_layout.addWidget(self.logView, 1)
+        self.detailsPanel.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored
+        )
+        root_layout.addWidget(self.detailsPanel, 1)
         root_layout.addWidget(self.unplugBanner)
         self.setCentralWidget(root)
-        self.resize(720, 560)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            geo = screen.availableGeometry()
+            width, height = window_size_for_screen(geo.width(), geo.height())
+            self.resize(width, height)
+        else:
+            self.resize(720, 440)
+
+        # One code path decides the primary button on first paint and on every
+        # refresh, so the opening screen cannot disagree with a later one.
+        self._sync_next_step()
 
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(2000)
         self._refresh_timer.timeout.connect(self._on_home_timer)
         self._refresh_timer.start()
+
+    def _wire_wizard_pages(self) -> None:
+        self.wizardIntroPage.startButton.clicked.connect(self.on_wizard_start)
+        self.wizardIntroPage.leaveButton.clicked.connect(self.on_wizard_leave)
+        self.wizardFinishPage.backupButton.clicked.connect(self.on_wizard_backup)
+        self.wizardFinishPage.laterButton.clicked.connect(self.on_wizard_leave)
+
+    def on_wizard_clicked(self) -> None:
+        if self._running:
+            return
+        self._wizard_active = True
+        self.stack.setCurrentIndex(PAGE_WIZARD_INTRO)
+
+    def on_wizard_start(self) -> None:
+        self._wizard_advance()
+
+    def on_wizard_leave(self) -> None:
+        self._leave_wizard()
+
+    def on_wizard_backup(self) -> None:
+        self._leave_wizard()
+        self.on_backup_requested()
+
+    def _leave_wizard(self) -> None:
+        self._wizard_active = False
+        self.setupPage.set_step("")
+        self.formatPage.set_step("")
+        self._go_home()
+
+    def _wizard_advance(self) -> None:
+        """Show whichever step still needs doing, or stop if none does."""
+        step = current_step(self.inventory)
+        if step.name == STEP_SETUP:
+            self.setupPage.set_step(step.counter)
+            self.stack.setCurrentIndex(PAGE_SETUP)
+            return
+        if step.name == STEP_FORMAT:
+            self.formatPage.set_step(step.counter)
+            self.stack.setCurrentIndex(PAGE_FORMAT)
+            return
+        if step.name == STEP_BACKUP:
+            self.wizardFinishPage.set_step(step.counter)
+            self.stack.setCurrentIndex(PAGE_WIZARD_FINISH)
+            return
+        # Blocked: the reason is already on the home screen, and there is no
+        # step here that clicking through could satisfy.
+        self._leave_wizard()
 
     def _wire_setup_page(self) -> None:
         self.setupPage.applyButton.clicked.connect(self.on_setup_apply)
@@ -266,12 +503,39 @@ class MainWindow(QMainWindow):
         if current == PAGE_BROWSE:
             self.stack.setCurrentIndex(PAGE_BROWSE)
 
+    def _sync_next_step(self) -> None:
+        if self._needs_reboot and self.inventory.unnamed_live:
+            # Covers the moment between naming and the next inventory reload,
+            # before the machine record has been consulted again.
+            self.inventory = replace(self.inventory, awaiting_restart=True)
+        step = next_step(self.inventory)
+        self._next_step = step
+        # Setup and prepare are steps of the guided run rather than errands the
+        # user should have to sequence themselves, so the button says so.
+        label = WIZARD_BUTTON_TEXT if step.action in ("setup", "format") else step.label
+        self.startButton.setText(label)
+        self.startReasonLabel.setText(step.detail)
+        # A blocked state has no action behind it, so show the reason instead of
+        # a large dead button suggesting something that cannot be done.
+        blocked = step.action == "blocked"
+        self.startButton.setVisible(not blocked)
+        self.blockedHeadlineLabel.setText(step.headline)
+        self.blockedHeadlineLabel.setVisible(blocked and bool(step.headline))
+        # Naming and preparing are pointless when this computer can never be a
+        # source, and entering those pages was the loop the user got stuck in.
+        usable = live_disk_unsupported(self.inventory) is None
+        self._live_disk_usable = usable
+        if not self._running:
+            self.startButton.setEnabled(step.enabled)
+            self.setupButton.setEnabled(usable)
+            self.formatButton.setEnabled(usable)
+
     def _apply_inventory(self, inventory: Inventory) -> None:
         self.inventory = inventory
         self.statusLabel.setText(inventory.status_line)
-        self.startReasonLabel.setText(inventory.start_blocked_reason or "")
-        if not self._running:
-            self.startButton.setEnabled(inventory.start_blocked_reason is None)
+        self._sync_next_step()
+        self.wizardIntroPage.update_for(self.inventory)
+        self.wizardFinishPage.update_for(self.inventory)
         self._replace_setup_page(inventory)
         self._replace_format_page(inventory)
         self._replace_browse_page(inventory)
@@ -314,8 +578,52 @@ class MainWindow(QMainWindow):
             noun=_HELPER_NOUNS.get(self._helper_kind, "backup"),
         )
 
+    def on_cancel_clicked(self) -> None:
+        if not self._running or self._cancelling:
+            return
+        if not self._confirm_cancel():
+            return
+        self._cancelling = True
+        self.cancelButton.setEnabled(False)
+        self.progressBar.setFormat(CANCEL_REQUESTED_TEXT)
+        self.append_log(CANCEL_REQUESTED_TEXT)
+        self._send_cancel()
+
+    def _confirm_cancel(self) -> bool:
+        if self.ask_cancel is not None:
+            return self.ask_cancel()
+        box = QMessageBox(self)
+        box.setObjectName("cancelConfirm")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(CANCEL_CONFIRM_TITLE)
+        box.setText(CANCEL_CONFIRM_TEXT)
+        stop = box.addButton(CANCEL_YES_TEXT, QMessageBox.ButtonRole.DestructiveRole)
+        keep = box.addButton(CANCEL_NO_TEXT, QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(keep)
+        box.exec()
+        return box.clickedButton() is stop
+
+    def _send_cancel(self) -> None:
+        helper = self.helper_path if self.helper_path is not None else which_helper()
+        if helper is None or not self.helper_exists or not self.pkexec_exists:
+            self.show_error(self._missing_helper_message(helper is not None))
+            return
+        argv = pkexec_argv(helper, ["cancel"])
+        if self.start_cancel is not None:
+            self.start_cancel(argv)
+            return
+        proc = LineProcess(self)
+        self._cancel_process = proc
+        proc.line.connect(self.append_log)
+        proc.start(argv)
+
     def closeEvent(self, event) -> None:
         if self._running:
+            # Closing the window does not stop root's rsync, so pretending it
+            # does would be worse than refusing. Say what is actually running.
+            self.show_error(CLOSE_RUNNING_TEXT)
+            if not self._cancelling:
+                self.on_cancel_clicked()
             event.ignore()
             return
         if self.browsePage.mounted:
@@ -324,25 +632,124 @@ class MainWindow(QMainWindow):
             return
         super().closeEvent(event)
 
-    def show_unplug(self, visible: bool) -> None:
+    def show_unplug(self, visible: bool, *, text: str = UNPLUG_BANNER_TEXT) -> None:
+        self.unplugBanner.setText(text)
         self.unplugBanner.setVisible(visible)
 
+    def _clear_unplug(self) -> None:
+        """Hide the banner unless a backup may have left UUIDs cloned.
+
+        Format, mount and unmount do not clone UUIDs, so they hide the banner
+        when they fail. They must not erase a still-standing warning from a
+        backup that never finished.
+        """
+        if self._backup_unfinished:
+            self.show_unplug(True, text=UNPLUG_UNFINISHED_TEXT)
+            return
+        self.show_unplug(False)
+
+    def on_details_clicked(self) -> None:
+        # Opening the log must not grow the window: on a small VM that is
+        # what pushed the unplug banner under the taskbar.
+        size = self.size()
+        show = self.logView.isHidden()
+        self.logView.setVisible(show)
+        self.detailsButton.setText("Hide details" if show else "See details")
+        self.resize(size)
+
     def append_log(self, line: str) -> None:
-        self.logView.appendPlainText(line)
-        current = current_file_from_line(line)
-        if current is not None:
-            self.currentFileLabel.setText(current)
+        clean = strip_ansi(line)
+        self.logView.appendPlainText(clean)
+        current = current_file_from_line(clean)
+        self.show_current_file(current or "")
+
+    def _start_progress(self, fselection: str) -> None:
+        # The requested functions tell us how many partitions MBU will copy, so
+        # the bar can be a real fraction rather than a spinner. Flags such as
+        # -bootfix are instructions, not partitions, and must not be counted.
+        self._phases_total = len(
+            [f for f in fselection.split(",") if f and not f.startswith("-")]
+        )
+        self._phases_done = 0
+        self._phase_files = 0
+        self._phase_target = ""
+        self.summaryLabel.hide()
+        self.summaryLabel.setText("")
+        self.show_current_file("")
+        self.progressBar.setMaximum(max(self._phases_total, 1))
+        self.progressBar.setValue(0)
+        self.progressBar.setFormat("Starting")
+        self.progressBar.setTextVisible(True)
+        self.progressBar.show()
+        self._cancelling = False
+        self.cancelButton.setEnabled(True)
+        self.cancelButton.show()
+
+    def _finish_progress(self, ok: bool, summary: str = "") -> None:
+        self.cancelButton.hide()
+        self.show_current_file("")
+        if not ok:
+            self.progressBar.hide()
+            self.summaryLabel.hide()
+            self.summaryLabel.setText("")
+            return
+        self.progressBar.setMaximum(1)
+        self.progressBar.setValue(1)
+        self.progressBar.setFormat("")
+        self.progressBar.setTextVisible(False)
+        self.summaryLabel.setText(summary)
+        self.summaryLabel.setVisible(bool(summary))
+
+    def _backup_summary_text(self) -> str:
+        copied = copied_bytes_from_lines(self._helper_output)
+        route = route_sets_from_lines(self._helper_output)
+        from_set = route[0] if route else None
+        to_set = route[1] if route else None
+        if not from_set and self.inventory.live_set:
+            from_set = self.inventory.live_set
+        if not to_set and len(self.inventory.backup_sets) == 1:
+            to_set = self.inventory.backup_sets[0]
+        if self.last_run is not None:
+            from_set = from_set or self.last_run.from_set
+            to_set = to_set or self.last_run.to_set
+        return backup_summary(
+            from_set=from_set, to_set=to_set, copied_bytes=copied
+        )
+
+    def show_current_file(self, text: str) -> None:
+        self._current_file = text
+        if not text:
+            self.currentFileLabel.setText("")
+            self.currentFileLabel.hide()
+            return
+        self.currentFileLabel.show()
+        self._elide_current_file()
+
+    def _elide_current_file(self) -> None:
+        room = self.currentFileLabel.width()
+        if room <= 1:
+            # Before the first layout pass there is no width to fit into.
+            self.currentFileLabel.setText(self._current_file)
+            return
+        metrics = QFontMetrics(self.currentFileLabel.font())
+        self.currentFileLabel.setText(
+            metrics.elidedText(self._current_file, Qt.TextElideMode.ElideMiddle, room)
+        )
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._elide_current_file()
 
     def show_error(self, message: str) -> None:
         self.append_log(message)
         if not self._running:
-            self.startButton.setEnabled(self.inventory.start_blocked_reason is None)
+            self.startButton.setEnabled(self._next_step.enabled)
 
     def set_running(self, running: bool) -> None:
         self._running = running
         idle = not running
-        self.setupButton.setEnabled(idle)
-        self.formatButton.setEnabled(idle)
+        self.setupButton.setEnabled(idle and self._live_disk_usable)
+        self.formatButton.setEnabled(idle and self._live_disk_usable)
         self.browseButton.setEnabled(idle)
         if running:
             self.startButton.setEnabled(False)
@@ -355,7 +762,7 @@ class MainWindow(QMainWindow):
             self.browsePage.unmountButton.setEnabled(False)
             self.browsePage.leaveButton.setEnabled(False)
         else:
-            self.startButton.setEnabled(self.inventory.start_blocked_reason is None)
+            self.startButton.setEnabled(self._next_step.enabled)
             self.setupPage.leaveButton.setEnabled(True)
             self.setupPage._sync_enabled()
             self.formatPage.leaveButton.setEnabled(True)
@@ -363,10 +770,26 @@ class MainWindow(QMainWindow):
             self.browsePage._sync_enabled()
 
     def on_start_clicked(self) -> None:
-        if self.inventory.start_blocked_reason or self._running:
+        if self._running:
+            return
+        action = self._next_step.action
+        # Anything short of ready-to-back-up means there are steps to walk, and
+        # walking them one screen at a time is what the wizard is for.
+        if action in ("setup", "format"):
+            self.on_wizard_clicked()
+            return
+        if action != "backup":
+            return
+        self.on_backup_requested()
+
+    def on_backup_requested(self) -> None:
+        if self._running:
             return
         dialog = BackupDialog(self.inventory, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if dialog.route is None:
+            self.show_error(UNKNOWN_DESTINATION_TEXT)
             return
         self._run_backup_with_fselection(dialog.fselection())
 
@@ -376,7 +799,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(PAGE_SETUP)
 
     def on_setup_leave(self) -> None:
-        self._go_home()
+        self._leave_wizard() if self._wizard_active else self._go_home()
 
     def on_setup_apply(self) -> None:
         if self._running or not self.setupPage._can_apply():
@@ -389,15 +812,16 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(PAGE_FORMAT)
 
     def on_format_leave(self) -> None:
-        self._go_home()
+        self._leave_wizard() if self._wizard_active else self._go_home()
 
     def on_format_apply(self) -> None:
         if self._running or not self.formatPage._can_format():
             return
         name = self.formatPage.selected_disk_name()
-        if name is None:
+        disk_id = self.formatPage.selected_disk_id()
+        if name is None or disk_id is None:
             return
-        self._run_format_disk(name, self.formatPage.psetEdit.text())
+        self._run_format_disk(name, disk_id, self.formatPage.psetEdit.text())
 
     def on_browse_clicked(self) -> None:
         if self._running:
@@ -448,6 +872,7 @@ class MainWindow(QMainWindow):
             return
         argv = pkexec_argv(helper, ["backup", "--fselection", fselection])
         self._helper_output = []
+        self._start_progress(fselection)
         self.show_unplug(False)
         self.set_running(True)
         if self.start_process is not None:
@@ -481,7 +906,7 @@ class MainWindow(QMainWindow):
         proc.finished.connect(self._on_process_finished)
         proc.start(argv)
 
-    def _run_format_disk(self, disk: str, pset: str) -> None:
+    def _run_format_disk(self, disk: str, disk_id: str, pset: str) -> None:
         if self._running:
             return
         self._helper_kind = "format-disk"
@@ -491,9 +916,12 @@ class MainWindow(QMainWindow):
             self.show_error(self._missing_helper_message(helper_ok))
             self._go_home()
             return
-        argv = pkexec_argv(helper, ["format-disk", "--disk", disk, "--pset", pset])
+        argv = pkexec_argv(
+            helper,
+            ["format-disk", "--disk", disk, "--disk-id", disk_id, "--pset", pset],
+        )
         self._helper_output = []
-        self.show_unplug(False)
+        self._clear_unplug()
         self.set_running(True)
         if self.start_process is not None:
             self.start_process(argv)
@@ -516,7 +944,7 @@ class MainWindow(QMainWindow):
             return
         argv = pkexec_argv(helper, ["mount", "--set", set_name])
         self._helper_output = []
-        self.show_unplug(False)
+        self._clear_unplug()
         self.set_running(True)
         if self.start_process is not None:
             self.start_process(argv)
@@ -539,7 +967,7 @@ class MainWindow(QMainWindow):
             return
         argv = pkexec_argv(helper, ["clean"])
         self._helper_output = []
-        self.show_unplug(False)
+        self._clear_unplug()
         self.set_running(True)
         if self.start_process is not None:
             self.start_process(argv)
@@ -552,7 +980,33 @@ class MainWindow(QMainWindow):
 
     def _on_helper_line(self, text: str) -> None:
         self._helper_output.append(text)
+        if self._helper_kind == "label-live":
+            shown = plain_label_line(text)
+            if shown is not None:
+                self.append_log(shown)
+            return
+        if self._helper_kind == "backup":
+            self._track_progress(text)
         self.append_log(text)
+
+    def _track_progress(self, text: str) -> None:
+        target = sync_target(text)
+        if target is not None:
+            self._phases_done += 1
+            self._phase_target = target
+            self._phase_files = 0
+        elif current_file_from_line(text) is not None:
+            self._phase_files += 1
+        else:
+            return
+        total = max(self._phases_total, self._phases_done)
+        self.progressBar.setMaximum(total)
+        self.progressBar.setValue(max(self._phases_done - 1, 0))
+        self.progressBar.setFormat(
+            progress_label(
+                self._phases_done, total, self._phase_target, self._phase_files
+            )
+        )
 
     def _on_process_finished(self, code: int) -> None:
         stderr = "\n".join(self._helper_output)
@@ -569,36 +1023,71 @@ class MainWindow(QMainWindow):
 
     def on_helper_finished(self, code: int, stderr: str = "") -> None:
         if code == 0:
+            self._finish_progress(True, summary=self._backup_summary_text())
+            self._backup_unfinished = False
             self.show_unplug(True)
             self.set_running(False)
             self.refresh()
             return
+        self._finish_progress(False)
         self.show_error(self._explain_failure(code, stderr))
-        self.show_unplug(False)
+        # A backup that got as far as running may already have cloned UUIDs, so
+        # the disk still has to come out even though the run failed.
+        self._backup_unfinished = True
+        self.show_unplug(True, text=UNPLUG_UNFINISHED_TEXT)
         self.set_running(False)
 
     def on_label_live_finished(self, code: int, stderr: str = "") -> None:
         if code != 0:
             self.show_error(self._explain_failure(code, stderr))
+            self.set_running(False)
+            self._go_home()
+            return
         self.set_running(False)
+        # Ask the disks again before judging: whether the new names took effect
+        # is exactly the question, and the inventory in hand predates them.
+        self.refresh()
+        # The names are on the disk, but the kernel cannot re-read the table of
+        # the disk it is running from. If udev did not pick the new names up we
+        # must say so, because offering "Set up this computer" again is the loop
+        # that made the app look broken.
+        if self.inventory.unnamed_live:
+            self._needs_reboot = True
+            self._leave_wizard()
+            self._sync_next_step()
+            self.append_log(SETUP_REBOOT_TEXT)
+            return
+        self.append_log(SETUP_DONE_TEXT)
+        if self._wizard_active:
+            self._wizard_advance()
+            return
         self._go_home()
 
     def on_format_finished(self, code: int, stderr: str = "") -> None:
         if code != 0:
             self.show_error(self._explain_failure(code, stderr))
-            self.show_unplug(False)
+            self._clear_unplug()
             self.set_running(False)
             self._go_home()
             return
         self.set_running(False)
         self.refresh()
-        if self._ask_copy_now():
+        # Formatting runs bare mkfs, so the new filesystems get fresh random
+        # UUIDs and nothing is cloned yet. Telling the user to unplug here is
+        # both untrue and the opposite of what they need to do next, which is
+        # to back up onto the disk they just prepared.
+        self._clear_unplug()
+        if self._wizard_active:
+            # The wizard has its own ending that offers the same choice, so
+            # asking here as well would be asking twice.
+            self._wizard_advance()
+            return
+        if describe_backup_route(self.inventory) is not None and self._ask_copy_now():
             self.stack.setCurrentIndex(PAGE_HOME)
             self._run_backup_with_fselection(
                 "-bootfix," + ",".join(self.inventory.live_functions)
             )
             return
-        self.show_unplug(True)
         self.stack.setCurrentIndex(PAGE_HOME)
 
     def on_mount_finished(self, code: int, stderr: str = "") -> None:
@@ -611,13 +1100,13 @@ class MainWindow(QMainWindow):
         self.browsePage.busyLabel.setText(message)
         self.show_error(message)
         self.browsePage.set_mounted(False)
-        self.show_unplug(False)
+        self._clear_unplug()
         self.set_running(False)
 
     def on_unmount_finished(self, code: int) -> None:
         if code != 0:
             self.browsePage.busyLabel.setText(UNMOUNT_FAIL_TEXT)
-            self.show_unplug(False)
+            self._clear_unplug()
             self.set_running(False)
             return
         self.browsePage.busyLabel.setText("")
@@ -629,9 +1118,13 @@ class MainWindow(QMainWindow):
     def _ask_copy_now(self) -> bool:
         if self.ask_copy_now is not None:
             return self.ask_copy_now()
+        route = describe_backup_route(self.inventory)
         box = QMessageBox(self)
         box.setWindowTitle("Backup disk ready")
-        box.setText("Copy everything from this computer onto the new backup disk?")
+        box.setText(
+            "Copy everything from this computer onto the new backup disk?\n\n"
+            f"{route}"
+        )
         copy_btn = box.addButton(COPY_NOW_TEXT, QMessageBox.ButtonRole.AcceptRole)
         box.addButton(SKIP_TEXT, QMessageBox.ButtonRole.RejectRole)
         box.exec()

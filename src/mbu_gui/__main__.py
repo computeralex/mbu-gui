@@ -8,12 +8,16 @@ from pathlib import Path
 from mbu_gui.disks import Inventory, load_lsblk
 from mbu_gui.helper_client import which_helper
 from mbu_gui.logs import LastRun, parse_master_log
+from mbu_gui.machine import apply_machine_guard, load_machine_record, record_path
 from mbu_gui.paths import resolve_paths
 
 _INSTALLED_DESKTOP = Path("/usr/share/applications/mbu-gui.desktop")
 _REPO_DESKTOP = Path(__file__).resolve().parents[2] / "data" / "mbu-gui.desktop"
 
-_LSBLK_COLUMNS = "NAME,PATH,TYPE,SIZE,FSTYPE,MOUNTPOINT,PARTLABEL,PARTN,UUID,MODEL"
+_LSBLK_COLUMNS = (
+    "NAME,PATH,TYPE,SIZE,FSTYPE,MOUNTPOINT,PARTLABEL,PARTN,UUID,MODEL,SERIAL,WWN,"
+    "PTUUID,PTTYPE"
+)
 
 
 def load_inventory() -> Inventory:
@@ -21,7 +25,9 @@ def load_inventory() -> Inventory:
         ["lsblk", "-J", "-o", _LSBLK_COLUMNS],
         text=True,
     )
-    return load_lsblk(out)
+    inventory = load_lsblk(out)
+    record = load_machine_record(record_path(resolve_paths().state_dir))
+    return apply_machine_guard(inventory, record)
 
 
 def load_last_run() -> LastRun | None:
@@ -29,6 +35,11 @@ def load_last_run() -> LastRun | None:
     if not paths.master_log.exists():
         return None
     return parse_master_log(paths.master_log.read_text(errors="replace"))
+
+
+def backup_unfinished() -> bool:
+    """True when a previous backup never finished cleanly, even across a crash."""
+    return resolve_paths().incomplete_marker.exists()
 
 
 def main() -> int:
@@ -56,6 +67,7 @@ def main() -> int:
         reload_last_run=load_last_run,
         helper_exists=bool(which_helper()),
         pkexec_exists=bool(shutil.which("pkexec")),
+        backup_unfinished=backup_unfinished(),
     )
     if err:
         w.show_error(err)

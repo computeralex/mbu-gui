@@ -51,7 +51,10 @@
           "partn": 4,
           "uuid": "DDDD"
         }
-      ]
+      ],
+      "serial": "SYS0000INTERNAL",
+      "wwn": "0x5000aaaa1111bbbb",
+      "ptuuid": "11111111-1111"
     }
   ]
 }

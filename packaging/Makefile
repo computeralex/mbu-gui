@@ -1,5 +1,5 @@
 PKG := mbu-gui
-VERSION := 0.1.0
+VERSION := 0.1.0~alpha1
 ARCH := all
 DEB := $(PKG)_$(VERSION)_$(ARCH).deb
 
@@ -17,6 +17,7 @@ deb:
 	mkdir -p $(DEST)/usr/share/mbu-gui
 	mkdir -p $(DEST)/usr/share/applications
 	mkdir -p $(DEST)/usr/share/polkit-1/actions
+	mkdir -p $(DEST)/var/lib/mbu-gui
 	cp $(CURDIR)/debian/control $(DEST)/DEBIAN/control
 	cp $(REPO)/scripts/mbu-gui $(DEST)/usr/bin/mbu-gui
 	cp $(REPO)/scripts/mbu-gui-helper $(DEST)/usr/lib/mbu-gui/mbu-gui-helper

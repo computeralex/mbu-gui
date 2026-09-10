@@ -87,6 +87,80 @@ def test_apply_disabled_for_live_set_and_backup_set():
     assert p.applyButton.isEnabled()
 
 
+def test_every_disabled_state_says_why():
+    """Apply names was as silent as the format button when blocked."""
+    app()
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    p = SetupPage(inv)
+    # The default name is "main", which is what this computer already uses, so a
+    # freshly opened page on an already-named machine starts with a dead button.
+    p.setNameEdit.setText("main")
+    p.confirmEdit.setText("main")
+    p._sync_enabled()
+    assert not p.applyButton.isEnabled()
+    assert "already named" in p.blockReasonLabel.text()
+
+    p.setNameEdit.setText("bak1")
+    p.confirmEdit.setText("bak1")
+    p._sync_enabled()
+    assert not p.applyButton.isEnabled()
+    assert "already used by a backup disk" in p.blockReasonLabel.text()
+
+    p.setNameEdit.setText("new-set")
+    p._sync_enabled()
+    assert "letters and digits" in p.blockReasonLabel.text()
+
+    p.setNameEdit.setText("newset")
+    p.confirmEdit.setText("")
+    p._sync_enabled()
+    assert "Type newset" in p.blockReasonLabel.text()
+
+    p.confirmEdit.setText("newset")
+    p._sync_enabled()
+    assert p.applyButton.isEnabled()
+    assert p.blockReasonLabel.text() == ""
+
+
+def test_both_pages_identify_the_disk_the_same_way():
+    """The two flows described their target disk in different terms.
+
+    Prepare listed model and serial with no mount points; Set up listed mount
+    points with no disk identity. Both now carry the same identity line.
+    """
+    app()
+    from mbu_gui.format_page import FormatPage
+
+    inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    setup = SetupPage(inv)
+    fmt = FormatPage(inv)
+    fmt.diskList.setCurrentRow(0)
+    fmt._sync_enabled()
+
+    # Same shape of line on both: device, size, model, hardware id. The id is
+    # whichever the disk reports, so sda shows its WWN and sdb its serial.
+    from mbu_gui.disks import find_disk
+
+    live = find_disk(inv, inv.live_disk)
+    target = find_disk(inv, "sdb")
+    for label, disk in ((setup.diskInfoLabel, live), (fmt.diskInfoLabel, target)):
+        assert disk is not None and disk.disk_id is not None
+        assert disk.name in label.text()
+        assert disk.size in label.text()
+        assert disk.disk_id in label.text()
+
+    # Both show per-partition mount points and current labels.
+    setup_headers = [
+        setup.previewTable.horizontalHeaderItem(i).text()
+        for i in range(setup.previewTable.columnCount())
+    ]
+    fmt_headers = [
+        fmt.partitionTable.horizontalHeaderItem(i).text()
+        for i in range(fmt.partitionTable.columnCount())
+    ]
+    assert fmt_headers == ["device", "size", "mount", "current label"]
+    assert setup_headers[: len(fmt_headers)] == fmt_headers
+
+
 def test_preview_live_partitions_only():
     app()
     inv = load_lsblk((FIXTURES / "lsblk_unnamed.json").read_text())

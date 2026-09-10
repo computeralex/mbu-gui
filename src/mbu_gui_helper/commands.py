@@ -43,6 +43,20 @@ def sfdisk_label_argv(disk: str, partn: int, label: str) -> list[str]:
     ]
 
 
+def partx_update_argv(disk: str) -> list[str]:
+    """Nudge the kernel to re-read one disk's partition entries.
+
+    sfdisk cannot make the kernel re-read the table of the disk it is running
+    from, so partx updates the entries in place and the resulting uevents make
+    udev re-probe the new names.
+    """
+    return ["partx", "-u", f"/dev/{normalize_disk(disk)}"]
+
+
+def udev_settle_argv() -> list[str]:
+    return ["udevadm", "settle"]
+
+
 def mbu_environ(paths: MbuPaths, base: Mapping[str, str]) -> dict[str, str]:
     env = dict(base)
     env["mbuDir"] = str(paths.mbu_dir)
