@@ -41,6 +41,14 @@ See LICENSE for warranty. We do not speak for Ted Merrill.
 
 ## Install
 
+One line. It prints the alpha warning and waits for you to type `ALPHA`:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/computeralex/mbu-gui/fix/p0-disk-safety/scripts/install-alpha.sh)"
+```
+
+Or by hand from the tag:
+
 ```bash
 git clone --branch v0.1.0-alpha.1 https://github.com/computeralex/mbu-gui.git
 cd mbu-gui
