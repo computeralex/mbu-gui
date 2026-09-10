@@ -62,6 +62,17 @@ as externally managed (PEP 668).
 
 Privileged actions need the `.deb` (PolicyKit). The window still opens without it.
 
+## License
+
+The GUI (`src/`, `scripts/`, `packaging/`, `data/`) is **MIT**. No warranty
+of any kind, express or implied. See `LICENSE`.
+
+Ted Merrill's scripts in `vendor/mbu` are his. He released them uncopyrighted:
+public domain, or MIT or BSD, at your discretion. Do not claim ownership of
+what he wrote. This GUI does not speak for him.
+
+This software can erase disks. You use it at your own risk.
+
 ## Run from this repo
 
 ```bash
