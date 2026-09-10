@@ -95,18 +95,16 @@ check.
 
 ```bash
 git clone https://github.com/computeralex/mbu-gui.git
-cd mbu-gui && git checkout fix/p0-disk-safety
+cd mbu-gui && git checkout v0.1.0-alpha.1
 cd packaging && make deb
-sudo dpkg -i ./mbu-gui_0.1.0_all.deb
+sudo dpkg -i ./mbu-gui_0.1.0~alpha1_all.deb
 pip3 install --break-system-packages PySide6
 ```
 
 PySide6 is not packaged for Ubuntu 24.04, so it is not an apt dependency.
 
-Use `dpkg -i` rather than `apt install ./...` when reinstalling. The version in
-`packaging/debian/control` is a fixed `0.1.0`, so every rebuild carries the same
-version and apt can decide the installed package is already current and skip
-the file. `dpkg -i` always unpacks what you hand it.
+Use `dpkg -i` rather than `apt install ./...` when reinstalling the same
+upstream version. `dpkg -i` always unpacks what you hand it.
 
 Close and reopen the GUI after installing; a running instance keeps the old
 Python modules loaded.

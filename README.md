@@ -1,8 +1,58 @@
 # MBU GUI
 
-A window for Ted Merrill's MBU on Winux (Ubuntu 24.04 + KDE).
+**0.1.0-alpha.1** — Winux (Ubuntu 24.04 + KDE) only. Spare disk only.
 
-This is a wrapper, not a rewrite. Original MBU scripts live in `vendor/mbu`.
+A window for Ted Merrill's MBU. This is a wrapper, not a rewrite. Original
+MBU scripts live in `vendor/mbu`.
+
+This alpha has made a bootable clone on a UEFI VM (GPT, EFI System Partition,
+Secure Boot off). It is not a general-purpose backup product and it is not
+done.
+
+## What this is
+
+MBU makes a **mirror** of this computer onto a spare disk. That copy can boot
+if the firmware will load the copied EFI files. Each run makes the spare disk
+match this computer exactly, so a file you delete here is gone from the backup
+on the next run. It is not Time Machine and it is not a file archive.
+
+## Before you install
+
+- You need a **spare disk** you are willing to erase.
+- The computer must be **UEFI + GPT**. Legacy BIOS / MBR is refused on purpose.
+- **Turn Secure Boot off** before you try to boot the backup disk. Ted's docs
+  never mention this. Firmware that still has Secure Boot on can see a complete
+  ESP (`BOOTX64.EFI`, `shimx64.efi`) and still print `Access Denied`.
+- Unplug the backup disk after every backup. MBU clones filesystem UUIDs.
+  Leaving both disks attached can make Linux boot the wrong one.
+- Run **one window** at a time.
+
+## Known limits of this alpha
+
+- We do not check that the backup disk is large enough. An undersized disk
+  fails late, during the copy.
+- Exit 0 means MBU finished, not that we verified the clone boots. Boot it
+  once yourself, with Secure Boot off.
+- PySide6 is a second install. Ubuntu 24.04 has no `python3-pyside6` package.
+- There is no dry run. Confirming a format or a backup starts a write.
+- Destination size, single-instance lock, and CI are not in this build.
+
+See LICENSE for warranty. We do not speak for Ted Merrill.
+
+## Install
+
+```bash
+git clone --branch v0.1.0-alpha.1 https://github.com/computeralex/mbu-gui.git
+cd mbu-gui
+make -C packaging deb
+sudo apt install ./packaging/mbu-gui_0.1.0~alpha1_all.deb
+pip3 install --user --break-system-packages PySide6
+```
+
+`--break-system-packages` is required because Ubuntu 24.04 marks system Python
+as externally managed (PEP 668).
+
+Privileged actions need the `.deb` (PolicyKit). The window still opens without it.
 
 ## Run from this repo
 
@@ -12,24 +62,3 @@ pip3 install --user --break-system-packages PySide6
 python3 -m pytest
 PYTHONPATH=src python3 -m mbu_gui
 ```
-
-Ubuntu 24.04 marks the system Python as externally managed (PEP 668), so a
-plain `pip3 install --user PySide6` is rejected. `--break-system-packages` is
-required here. Ubuntu 24.04 also does not ship a `python3-pyside6` apt package.
-
-Privileged actions need the `.deb` (PolicyKit policy). The window still opens without it.
-
-## Install
-
-```bash
-make -C packaging deb
-sudo apt install ./packaging/mbu-gui_0.1.0_all.deb
-pip3 install --user --break-system-packages PySide6
-```
-
-Ubuntu 24.04 does not ship a `python3-pyside6` apt package. After installing the
-`.deb`, install PySide6 with pip as above. `--break-system-packages` is required
-because of PEP 668 (externally managed environment). A future distro package can
-replace that pip step if one appears.
-
-See LICENSE for warranty. We do not speak for Ted Merrill.
