@@ -44,7 +44,18 @@ EOF
 confirm
 
 say "Installing build tools..."
-sudo apt-get update -qq
+# A leftover PPA (Kodi, old graphics drivers, etc.) that has no Release
+# file for this Ubuntu version makes `apt-get update` fail. That is not
+# an MBU problem, and -qq hid the line that named the dead source.
+if ! sudo apt-get update; then
+    say ""
+    say "apt could not refresh every software source. That is usually an old"
+    say "third-party PPA that does not support this Ubuntu version — not a"
+    say "problem with MBU. The line above that starts with E: names it."
+    say "You can remove it later with:  sudo add-apt-repository --remove ppa:NAME"
+    say "Continuing with the sources that still work..."
+    say ""
+fi
 sudo apt-get install -y git make dpkg python3 python3-pip
 
 if [[ -e "$DEST" && ! -d "$DEST/.git" ]]; then
