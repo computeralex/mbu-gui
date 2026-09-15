@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -9,6 +11,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from mbu_gui.backup_prefs import load_backup_selection, save_backup_selection
 from mbu_gui.disks import Inventory, describe_backup_route
 
 BOOT_FIX_WARN = (
@@ -21,9 +24,16 @@ UNKNOWN_DESTINATION_TEXT = (
 
 
 class BackupDialog(QDialog):
-    def __init__(self, inventory: Inventory, parent=None):
+    def __init__(
+        self,
+        inventory: Inventory,
+        parent=None,
+        *,
+        config_dir: Path | None = None,
+    ):
         super().__init__(parent)
         self.inventory = inventory
+        self._config_dir = config_dir
         self.setWindowTitle("Start Backup")
         self._function_checks: list[tuple[str, QCheckBox]] = []
 
@@ -56,6 +66,7 @@ class BackupDialog(QDialog):
             box = QCheckBox(function)
             box.setObjectName(f"functionCheck_{function}")
             box.setChecked(True)
+            box.toggled.connect(self._sync_ok)
             self._function_checks.append((function, box))
             layout.addWidget(box)
 
@@ -68,16 +79,46 @@ class BackupDialog(QDialog):
 
         self.okButton = buttons.button(QDialogButtonBox.StandardButton.Ok)
         self.okButton.setObjectName("okButton")
-        self.okButton.setEnabled(self.route is not None)
+        self._apply_saved_selection()
+        self._sync_ok()
+
+    def _apply_saved_selection(self) -> None:
+        set_name = self.inventory.live_set
+        if not set_name:
+            return
+        saved = load_backup_selection(set_name, config_dir=self._config_dir)
+        if saved is None:
+            return
+        wanted = set(saved["functions"])
+        for function, box in self._function_checks:
+            box.setChecked(function in wanted)
+        self.bootFixCheck.setChecked(bool(saved["boot_fix"]))
+
+    def _checked_functions(self) -> list[str]:
+        return [name for name, box in self._function_checks if box.isChecked()]
+
+    def _sync_ok(self, *_args) -> None:
+        has_route = self.route is not None
+        has_selection = bool(self._checked_functions())
+        self.okButton.setEnabled(has_route and has_selection)
 
     def _on_boot_fix_toggled(self, checked: bool) -> None:
         self.bootFixWarnLabel.setVisible(not checked)
+
+    def accept(self) -> None:
+        set_name = self.inventory.live_set
+        if set_name:
+            save_backup_selection(
+                set_name,
+                functions=self._checked_functions(),
+                boot_fix=self.bootFixCheck.isChecked(),
+                config_dir=self._config_dir,
+            )
+        super().accept()
 
     def fselection(self) -> str:
         parts: list[str] = []
         if self.bootFixCheck.isChecked():
             parts.append("-bootfix")
-        for function, box in self._function_checks:
-            if box.isChecked():
-                parts.append(function)
+        parts.extend(self._checked_functions())
         return ",".join(parts)
