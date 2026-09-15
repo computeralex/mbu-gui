@@ -1946,7 +1946,8 @@ mbuPartSync()
     fi
     # DONE in mbuMountedPartSync: mbuSessionPartMark "$outpart" MBUMarkTarget
     quser "DONE Syncronizing FROM ($fromspec) ON $fromdevpath TO ($outspec) ON $outdevpath"
-    if mbuCleanMountPt "$fromdir" ; then
+    # Ted reported missing ! before mbuCleanMountPt (success was treated as failure).
+    if ! mbuCleanMountPt "$fromdir" ; then
         qReturnFail "failed to unmount $fromdir"
         return 1
     fi
