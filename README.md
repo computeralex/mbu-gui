@@ -19,9 +19,9 @@ your laptop.”
 
 ## What this is
 
-MBU makes a **mirror** of this computer onto a spare disk. That copy can boot
+MBU makes a **mirror** of the running system onto a spare disk. That copy can boot
 if the firmware will load the copied EFI files. Each run makes the spare disk
-match this computer exactly, so a file you delete here is gone from the backup
+match the running system exactly, so a file you delete here is gone from the backup
 on the next run. It is not Time Machine and it is not a file archive.
 
 ## Before you install
@@ -43,6 +43,7 @@ on the next run. It is not Time Machine and it is not a file archive.
 - Exit 0 means MBU finished, not that we verified the clone boots. Boot it
   once yourself, with Secure Boot off.
 - PySide6 is a second install. Ubuntu 24.04 has no `python3-pyside6` package.
+  The package depends on `libxcb-cursor0`, which PySide6 needs on many desktops.
 - There is no dry run. Confirming a format or a backup starts a write.
 - Destination size, single-instance lock, and CI are not in this build.
 
@@ -53,16 +54,26 @@ See LICENSE for warranty. We do not speak for Ted Merrill.
 From the tag, if you do not want the one-liner:
 
 ```bash
-git clone --branch v0.1.0-alpha.1 https://github.com/computeralex/mbu-gui.git
+git clone --branch v0.1.0-alpha.2 https://github.com/computeralex/mbu-gui.git
 cd mbu-gui
 make -C packaging deb
-sudo apt install ./packaging/mbu-gui_0.1.0~alpha1_all.deb
+sudo apt install ./packaging/mbu-gui_0.1.0~alpha2_all.deb
 pip3 install --user --break-system-packages PySide6
 ```
 
 `--break-system-packages` is required because Ubuntu 24.04 marks system Python
 as externally managed (PEP 668). Privileged actions need the `.deb` (PolicyKit).
 The window still opens without it.
+
+## Uninstall
+
+```bash
+sudo apt remove mbu-gui
+```
+
+Optional leftovers: PySide6 from `pip3 install --user`, `~/mbu-gui` if you used
+the one-liner clone, `~/.config/mbu-gui` (saved partition choices), and
+`/var/lib/mbu-gui` (helper logs and state).
 
 ## License
 

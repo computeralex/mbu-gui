@@ -1,5 +1,5 @@
 PKG := mbu-gui
-VERSION := 0.1.0~alpha1
+VERSION := 0.1.0~alpha2
 ARCH := all
 DEB := $(PKG)_$(VERSION)_$(ARCH).deb
 
