@@ -34,6 +34,7 @@ def test_a_named_computer_without_a_disk_resumes_at_preparing_one():
     assert step.counter == "Step 2 of 3"
     assert completed_steps(inv) == [STEP_SETUP]
     assert "already named" in resume_note(inv)
+    assert "Next: prepare a backup disk" in resume_note(inv)
 
 
 def test_a_ready_computer_resumes_at_the_backup():
@@ -41,7 +42,7 @@ def test_a_ready_computer_resumes_at_the_backup():
     step = current_step(inv)
     assert step.name == STEP_BACKUP
     assert step.counter == "Step 3 of 3"
-    assert "only the backup itself is left" in resume_note(inv)
+    assert "Next: make the first backup" in resume_note(inv)
 
 
 def test_the_counter_does_not_renumber_as_steps_are_skipped():

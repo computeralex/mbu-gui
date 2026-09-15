@@ -99,17 +99,20 @@ def test_missing_backup_disk_offers_prepare_and_says_to_replug():
     from dataclasses import replace
 
     named = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
-    inv = replace(named, backup_sets=[], start_blocked_reason="Plug in the backup disk")
+    inv = replace(named, backup_sets=[], start_blocked_reason="No backup disk connected yet")
     w = MainWindow(inventory=inv, last_run=None)
     assert w.startButton.isEnabled()
     assert w.startButton.text() == "Take me through it"
-    assert "plug in the disk you already prepared" in w.startReasonLabel.text().lower()
+    assert "spare disk" in w.startReasonLabel.text().lower()
+    assert "plug in the backup" not in w.statusLabel.text().lower()
     w.startButton.click()
     w.wizardIntroPage.startButton.click()
     assert w.stack.currentIndex() == PAGE_FORMAT
     # Naming is already done, so the counter must not restart at one.
     assert w.formatPage.stepLabel.text() == "Step 2 of 3"
     assert "already named" in w.wizardIntroPage.resumeLabel.text()
+    assert w.wizardIntroPage.startButton.text() == "Continue"
+    assert w.wizardIntroPage.leaveButton.text() == "Cancel"
 
 
 def test_naming_reports_plainly_and_says_what_comes_next():

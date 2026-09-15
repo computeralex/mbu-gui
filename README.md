@@ -54,10 +54,10 @@ See LICENSE for warranty. We do not speak for Ted Merrill.
 From the tag, if you do not want the one-liner:
 
 ```bash
-git clone --branch v0.1.0-alpha.2 https://github.com/computeralex/mbu-gui.git
+git clone --branch v0.1.0-alpha.3 https://github.com/computeralex/mbu-gui.git
 cd mbu-gui
 make -C packaging deb
-sudo apt install ./packaging/mbu-gui_0.1.0~alpha2_all.deb
+sudo apt install ./packaging/mbu-gui_0.1.0~alpha3_all.deb
 pip3 install --user --break-system-packages PySide6
 ```
 
