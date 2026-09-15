@@ -40,7 +40,7 @@ def test_unnamed_blocks_start():
     assert inv.live_set is None
     assert inv.unnamed_live is True
     assert inv.backup_sets == []
-    assert inv.status_line == "Plug in the backup disk"
+    assert inv.status_line == "Running system is not named for MBU yet"
     assert "Set up the running system" in (inv.start_blocked_reason or "")
 
 

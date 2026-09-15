@@ -87,7 +87,7 @@ def inversion_reason(record: MachineRecord | None, inventory: Inventory) -> str 
     if inventory.live_set == record.machine_set:
         return None
     return (
-        f"This computer is recorded as set `{record.machine_set}`, but right now "
+        f"The running system is recorded as set `{record.machine_set}`, but right now "
         f"it is running from set `{inventory.live_set}`. That usually means Linux "
         "booted from the backup disk instead of the internal disk. Backing up now "
         "would copy the backup over your real system disk. Shut down, unplug the "

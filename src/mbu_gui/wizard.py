@@ -101,15 +101,21 @@ def completed_steps(inventory: Inventory) -> list[str]:
 
 
 def resume_note(inventory: Inventory) -> str:
-    """One line telling a returning user what is already out of the way."""
+    """Tell a returning user what is next — not a dead decision about a done step."""
     done = completed_steps(inventory)
     if not done:
         return ""
-    if len(done) == len(_ORDER) - 1:
+    step = current_step(inventory)
+    if step.name == STEP_BACKUP:
         return (
-            "This computer is named and a backup disk is ready, so only the "
-            "backup itself is left."
+            "The running system is named and a backup disk is ready. "
+            "Next: make the first backup."
+        )
+    if step.name == STEP_FORMAT:
+        return (
+            "The running system is already named. "
+            "Next: prepare a backup disk."
         )
     if STEP_SETUP in done:
-        return "This computer is already named, so that step is done."
-    return "A backup disk is already prepared, so that step is done."
+        return "The running system is already named. Continue to the next step."
+    return "A backup disk is already prepared. Continue to the next step."

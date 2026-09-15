@@ -14,7 +14,7 @@ from mbu_gui.wizard import INTRO_TEXT, INTRO_TITLE, resume_note
 
 FINISH_TITLE = "Everything is ready"
 FINISH_TEXT = (
-    "This computer is named and the backup disk is prepared. The first backup "
+    "The running system is named and the backup disk is prepared. The first backup "
     "copies everything across and is the slowest one; later backups only copy "
     "what changed."
 )
@@ -24,6 +24,10 @@ FINISH_LATER_NOTE = (
     "Nothing is backed up until a backup runs. You can start one any time from "
     "the main screen."
 )
+WIZARD_START_TEXT = "Start"
+WIZARD_LEAVE_TEXT = "Not now"
+WIZARD_CONTINUE_TEXT = "Continue"
+WIZARD_CANCEL_TEXT = "Cancel"
 
 
 def _title(text: str) -> QLabel:
@@ -63,18 +67,28 @@ class WizardIntroPage(QWidget):
         layout.addStretch(1)
 
         buttons = QHBoxLayout()
-        self.startButton = QPushButton("Start")
+        self.startButton = QPushButton(WIZARD_START_TEXT)
         self.startButton.setObjectName("wizardStartButton")
-        self.leaveButton = QPushButton("Not now")
+        self.leaveButton = QPushButton(WIZARD_LEAVE_TEXT)
         self.leaveButton.setObjectName("wizardLeaveButton")
         buttons.addWidget(self.startButton)
         buttons.addWidget(self.leaveButton)
         layout.addLayout(buttons)
 
+        self.update_for(inventory)
+
     def update_for(self, inventory: Inventory) -> None:
         note = resume_note(inventory)
         self.resumeLabel.setText(note)
         self.resumeLabel.setVisible(bool(note))
+        # First-time: Start / Not now. Resuming past a finished step: Continue /
+        # Cancel — Start/Not now reads like a choice about the finished step.
+        if note:
+            self.startButton.setText(WIZARD_CONTINUE_TEXT)
+            self.leaveButton.setText(WIZARD_CANCEL_TEXT)
+        else:
+            self.startButton.setText(WIZARD_START_TEXT)
+            self.leaveButton.setText(WIZARD_LEAVE_TEXT)
 
 
 class WizardFinishPage(QWidget):

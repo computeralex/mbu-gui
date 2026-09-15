@@ -100,7 +100,7 @@ CLOSE_RUNNING_TEXT = (
 )
 CANCEL_REQUESTED_TEXT = "Stopping the backup..."
 SETUP_DONE_TEXT = (
-    "This computer is named and ready. Next: prepare a backup disk, which "
+    "The running system is named and ready. Next: prepare a backup disk, which "
     "erases a spare disk and sets it up to receive backups."
 )
 SETUP_REBOOT_TEXT = RESTART_TO_FINISH_TEXT

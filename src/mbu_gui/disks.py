@@ -46,7 +46,8 @@ _UNNAMED_LIVE_REASON = (
     "The running system's partitions are not named for MBU yet. "
     "Use Set up the running system."
 )
-_NO_BACKUP_REASON = "Plug in the backup disk"
+# Shown when no backup set is present during setup / home status.
+_NO_BACKUP_REASON = "No backup disk connected yet"
 _MULTIPLE_BACKUP_REASON = (
     "Several backup disks are connected. Unplug the extras so only the one you want to update is attached."
 )
@@ -353,8 +354,8 @@ _SETUP_DETAIL = (
     "nothing is erased."
 )
 _FORMAT_DETAIL = (
-    "No backup disk is connected. Plug in the disk you already prepared, or "
-    "prepare a new one. If you just prepared a disk, plug it back in and this "
+    "Next: connect a spare disk you are willing to erase, then prepare it as "
+    "the backup disk. If you already prepared one and it is connected, this "
     "will change to Back up now."
 )
 
@@ -467,7 +468,9 @@ def parse_lsblk(data: dict[str, Any]) -> Inventory:
         live_functions=live_functions,
         unnamed_live=unnamed_live,
         multiple_backup_sets=multiple_backup_sets,
-        status_line=_status_line(backup_sets, live_pttype),
+        status_line=_status_line(
+            backup_sets, live_pttype, unnamed_live=unnamed_live
+        ),
         start_blocked_reason=_start_blocked_reason(
             unnamed_live, backup_sets, live_pttype
         ),
@@ -656,9 +659,16 @@ def live_disk_unsupported(inventory: Inventory) -> str | None:
     return _MBR_LIVE_REASON
 
 
-def _status_line(backup_sets: list[str], live_pttype: str | None = None) -> str:
+def _status_line(
+    backup_sets: list[str],
+    live_pttype: str | None = None,
+    *,
+    unnamed_live: bool = False,
+) -> str:
     if live_pttype is not None and live_pttype != GPT_PTTYPE:
         return _MBR_STATUS
+    if unnamed_live:
+        return "Running system is not named for MBU yet"
     if not backup_sets:
         return _NO_BACKUP_REASON
     if len(backup_sets) > 1:
