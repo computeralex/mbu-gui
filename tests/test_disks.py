@@ -41,7 +41,7 @@ def test_unnamed_blocks_start():
     assert inv.unnamed_live is True
     assert inv.backup_sets == []
     assert inv.status_line == "Plug in the backup disk"
-    assert "Set up this computer" in (inv.start_blocked_reason or "")
+    assert "Set up the running system" in (inv.start_blocked_reason or "")
 
 
 def test_two_backup_sets_block_start():
@@ -274,7 +274,7 @@ def test_mbr_live_disk_is_reported_instead_of_looping_through_setup():
 
     MBR partitions have no name field, so sfdisk reports success, rewrites the
     table and drops the name. The disk then still looks unnamed, so the app
-    sent the user back to Set up this computer forever.
+    sent the user back to Set up the running system forever.
     """
     from mbu_gui.disks import live_disk_unsupported, next_step
 

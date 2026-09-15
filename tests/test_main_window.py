@@ -79,7 +79,7 @@ def test_unsupported_computer_shows_no_button_at_all():
     w.show()
     assert w.startButton.isHidden()
     assert w.blockedHeadlineLabel.isVisible()
-    assert w.blockedHeadlineLabel.text() == "This computer cannot be backed up"
+    assert w.blockedHeadlineLabel.text() == "The running system cannot be backed up"
     assert "MBR" in w.startReasonLabel.text()
     assert "UEFI" in w.startReasonLabel.text()
     assert not w.setupButton.isEnabled()
@@ -127,7 +127,7 @@ def test_naming_reports_plainly_and_says_what_comes_next():
     ):
         w._on_helper_line(line)
     log = w.logView.toPlainText()
-    assert "Named this computer's main-efi partition" in log
+    assert "Named the running system's main-efi partition" in log
     assert "ioctl" not in log and "Device or resource busy" not in log
     w.on_label_live_finished(0)
     assert "prepare a backup disk" in w.logView.toPlainText()
@@ -137,7 +137,7 @@ def test_names_the_kernel_cannot_see_yet_ask_for_a_restart():
     """The loop that made the app unusable.
 
     If udev does not pick the new names up, the inventory still reads unnamed,
-    and the old build answered by offering "Set up this computer" again on work
+    and the old build answered by offering "Set up the running system" again on work
     the user had already done.
     """
     app()
@@ -145,9 +145,9 @@ def test_names_the_kernel_cannot_see_yet_ask_for_a_restart():
     w = MainWindow(inventory=inv, last_run=None, reload_inventory=lambda: inv)
     w.on_label_live_finished(0)
     assert w.startButton.isHidden()
-    assert w.blockedHeadlineLabel.text() == "Restart this computer to finish"
+    assert w.blockedHeadlineLabel.text() == "Restart the running system to finish"
     assert "restart" in w.startReasonLabel.text().lower()
-    assert "do not need to set up this computer a second time" in w.startReasonLabel.text()
+    assert "do not need to set up the running system a second time" in w.startReasonLabel.text()
     assert w._next_step.action == "blocked"
 
 
@@ -454,7 +454,7 @@ def test_successful_backup_summarises_parsed_size_and_route():
     assert not w.summaryLabel.isHidden()
     assert (
         w.summaryLabel.text()
-        == "Copied about 12 GB from this computer (main) onto bak1."
+        == "Copied about 12 GB from the running system (main) onto bak1."
     )
 
 
@@ -467,7 +467,7 @@ def test_successful_backup_names_the_route_without_inventing_a_size():
     w.on_helper_finished(0)
     assert w.cancelButton.isHidden()
     assert not w.summaryLabel.isHidden()
-    assert w.summaryLabel.text() == "Copied from this computer (main) onto bak1."
+    assert w.summaryLabel.text() == "Copied from the running system (main) onto bak1."
     assert "GB" not in w.summaryLabel.text()
 
 

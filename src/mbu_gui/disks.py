@@ -34,16 +34,17 @@ _MOUNT_FUNCTIONS = {
 GPT_PTTYPE = "gpt"
 
 _MBR_LIVE_REASON = (
-    "This computer's disk uses an old MBR partition table, and MBU needs GPT "
+    "The running system's disk uses an old MBR partition table, and MBU needs GPT "
     "with an EFI partition. That normally means Linux was installed in legacy "
     "BIOS mode rather than UEFI mode.\n\n"
     "Nothing in this app can change that. Reinstalling Linux in UEFI mode is "
-    "the only way to make this computer work with MBU."
+    "the only way to make the running system work with MBU."
 )
 _MBR_STATUS = "This disk uses MBR, which MBU cannot use"
 
 _UNNAMED_LIVE_REASON = (
-    "This computer's partitions are not named for MBU yet. Use Set up this computer."
+    "The running system's partitions are not named for MBU yet. "
+    "Use Set up the running system."
 )
 _NO_BACKUP_REASON = "Plug in the backup disk"
 _MULTIPLE_BACKUP_REASON = (
@@ -202,7 +203,7 @@ def describe_backup_route(inventory: Inventory) -> str | None:
         return None
     targets = "\n".join(f"    {describe_disk(disk)}" for disk in disks)
     return (
-        f"From this computer (set `{inventory.live_set}`)\n"
+        f"From the running system (set `{inventory.live_set}`)\n"
         f"Onto backup set `{set_name}`, overwriting:\n{targets}"
     )
 
@@ -271,12 +272,12 @@ def setup_block_reason(
     if unsupported is not None:
         return unsupported
     if not name:
-        return "Give this computer's partitions a set name."
+        return "Give the running system's partitions a set name."
     if not is_valid_set_name(name):
         return f"`{name}` will not work as a set name. Use letters and digits only."
     if name == inventory.live_set:
         return (
-            f"This computer's partitions are already named `{name}`. "
+            f"The running system's partitions are already named `{name}`. "
             "You can leave them alone."
         )
     if name in inventory.backup_sets:
@@ -310,7 +311,7 @@ def format_block_reason(
         return f"`{pset}` will not work as a set name. Use letters and digits only."
     if pset == inventory.live_set:
         return (
-            f"`{pset}` is this computer's own set name. "
+            f"`{pset}` is the running system's own set name. "
             "Give the backup disk a different name."
         )
     if pset in other_disk_set_names(inventory, disk):
@@ -348,7 +349,7 @@ class NextStep:
 
 
 _SETUP_DETAIL = (
-    "First this computer's partitions need MBU names. This only names them; "
+    "First the running system's partitions need MBU names. This only names them; "
     "nothing is erased."
 )
 _FORMAT_DETAIL = (
@@ -358,11 +359,11 @@ _FORMAT_DETAIL = (
 )
 
 
-RESTART_HEADLINE = "Restart this computer to finish"
+RESTART_HEADLINE = "Restart the running system to finish"
 RESTART_TO_FINISH_TEXT = (
-    "The names are written to the disk, but this computer is running from that "
+    "The names are written to the disk, but the running system is booted from that "
     "disk and cannot see them until it restarts. Restart, then open MBU Backup "
-    "again. You do not need to set up this computer a second time."
+    "again. You do not need to set up the running system a second time."
 )
 
 
@@ -384,13 +385,13 @@ def next_step(inventory: Inventory) -> NextStep:
         # the single thing it can never do here.
         return NextStep(
             "blocked",
-            "Cannot back up this computer",
+            "Cannot back up the running system",
             unsupported,
             enabled=False,
-            headline="This computer cannot be backed up",
+            headline="The running system cannot be backed up",
         )
     if inventory.unnamed_live:
-        return NextStep("setup", "Set up this computer", _SETUP_DETAIL)
+        return NextStep("setup", "Set up the running system", _SETUP_DETAIL)
     if not inventory.backup_sets:
         return NextStep("format", "Prepare a backup disk", _FORMAT_DETAIL)
     if len(inventory.backup_sets) > 1:

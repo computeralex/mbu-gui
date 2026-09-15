@@ -42,7 +42,7 @@ class SetupPage(QWidget):
         self.stepLabel.hide()
         layout.addWidget(self.stepLabel)
 
-        title = QLabel("Set up this computer")
+        title = QLabel("Set up the running system")
         layout.addWidget(title)
 
         self.safetyLabel = QLabel(SAFETY_COPY)

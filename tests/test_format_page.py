@@ -149,7 +149,7 @@ def test_live_set_name_is_refused_with_its_own_reason():
     p.confirmEdit.setText(token_for(inv, "sdb"))
     p._sync_enabled()
     assert not p.formatButton.isEnabled()
-    assert "this computer's own set name" in p.blockReasonLabel.text()
+    assert "the running system's own set name" in p.blockReasonLabel.text()
 
 
 def test_every_disabled_state_says_why():
@@ -297,7 +297,7 @@ def test_empty_candidates_message():
     p = FormatPage(inv)
     assert p.diskList.count() == 0
     assert p.emptyDiskLabel.text() == (
-        "Plug in a new disk that is not this computer's system disk."
+        "Plug in a new disk that is not the running system's disk."
     )
     assert not p.emptyDiskLabel.isHidden()
     p.psetEdit.setText("bak9")
@@ -409,7 +409,7 @@ def test_format_success_skip_unplug_and_home():
     assert "format-disk" in captured[0]
 
 
-def test_format_success_copy_everything_now():
+def test_format_success_offers_backup_dialog():
     app()
     inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
     captured = []
@@ -421,6 +421,7 @@ def test_format_success_copy_everything_now():
         start_process=lambda argv: captured.append(argv),
         helper_path=Path("/usr/lib/mbu-gui/mbu-gui-helper"),
         ask_copy_now=lambda: True,
+        open_backup_dialog=lambda: "-bootfix,root,home",
     )
     _ready_format(w)
     w.formatPage.formatButton.click()
@@ -431,7 +432,7 @@ def test_format_success_copy_everything_now():
         "/usr/lib/mbu-gui/mbu-gui-helper",
         "backup",
         "--fselection",
-        "-bootfix,efi,root,home,swap",
+        "-bootfix,root,home",
     ]
     w.on_helper_finished(0)
     assert w.stack.currentIndex() == PAGE_HOME
