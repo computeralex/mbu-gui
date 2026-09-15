@@ -1,0 +1,14 @@
+diff --git a/vendor/mbu/mbulib b/vendor/mbu/mbulib
+index bcfb1f0..b6a33d9 100755
+--- a/vendor/mbu/mbulib
++++ b/vendor/mbu/mbulib
+@@ -1946,7 +1946,8 @@ mbuPartSync()
+     fi
+     # DONE in mbuMountedPartSync: mbuSessionPartMark "$outpart" MBUMarkTarget
+     quser "DONE Syncronizing FROM ($fromspec) ON $fromdevpath TO ($outspec) ON $outdevpath"
+-    if mbuCleanMountPt "$fromdir" ; then
++    # Ted reported missing ! before mbuCleanMountPt (success was treated as failure).
++    if ! mbuCleanMountPt "$fromdir" ; then
+         qReturnFail "failed to unmount $fromdir"
+         return 1
+     fi

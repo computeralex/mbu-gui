@@ -114,7 +114,7 @@ def plain_label_line(line: str) -> str | None:
         return None
     m = _RENAMED_RE.match(s)
     if m:
-        return f"Named this computer's {m.group('new')} partition"
+        return f"Named the running system's {m.group('new')} partition"
     return line
 
 
@@ -210,13 +210,13 @@ def backup_summary(
     copied_bytes: int | None,
 ) -> str:
     if from_set and to_set:
-        route = f"from this computer ({from_set}) onto {to_set}"
+        route = f"from the running system ({from_set}) onto {to_set}"
     elif to_set:
-        route = f"from this computer onto {to_set}"
+        route = f"from the running system onto {to_set}"
     elif from_set:
-        route = f"from this computer ({from_set}) onto the backup disk"
+        route = f"from the running system ({from_set}) onto the backup disk"
     else:
-        route = "from this computer onto the backup disk"
+        route = "from the running system onto the backup disk"
     if copied_bytes is not None:
         return f"Copied {format_copied_size(copied_bytes)} {route}."
     return f"Copied {route}."

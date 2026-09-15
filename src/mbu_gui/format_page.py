@@ -27,7 +27,7 @@ from mbu_gui.disks import (
 )
 
 WIPE_WARNING = "This will erase the disk."
-EMPTY_DISK_TEXT = "Plug in a new disk that is not this computer's system disk."
+EMPTY_DISK_TEXT = "Plug in a new disk that is not the running system's disk."
 CONFIRM_PROMPT = "Type the confirmation code for the disk you selected"
 PARTITION_HEADERS = ["device", "size", "mount", "current label"]
 SET_NAME_LABEL = "Name for this backup set (your choice)"

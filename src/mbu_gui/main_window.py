@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from mbu_gui.backup_dialog import UNKNOWN_DESTINATION_TEXT, BackupDialog
+from mbu_gui.about_dialog import AboutDialog
 from mbu_gui.browse_page import BrowsePage, UNMOUNT_FAIL_TEXT
 from mbu_gui.disks import (
     Inventory,
@@ -45,8 +46,10 @@ from mbu_gui.logs import (
     strip_ansi,
     sync_target,
 )
+from mbu_gui.paths import resolve_paths
 from mbu_gui.process import LineProcess
 from mbu_gui.setup_page import SetupPage
+from mbu_gui.version import __version__, read_mbu_release
 from mbu_gui.wizard import (
     STEP_BACKUP,
     STEP_FORMAT,
@@ -61,12 +64,12 @@ UNPLUG_BANNER_TEXT = (
     "Duplicate UUIDs confuse Linux if you leave it plugged in."
 )
 UNPLUG_UNFINISHED_TEXT = (
-    "The backup did not finish. Unplug the backup disk anyway.\n"
-    "MBU clones UUIDs one partition at a time, so this disk may already share "
-    "UUIDs with this computer. Leaving it plugged in can make Linux boot from "
-    "the wrong disk."
+    "Partial clone — unplug the backup disk.\n"
+    "The backup did not finish. MBU clones UUIDs one partition at a time, so "
+    "this disk may already share UUIDs with the running system. Leaving it "
+    "plugged in can make Linux boot from the wrong disk."
 )
-COPY_NOW_TEXT = "Copy everything now"
+COPY_NOW_TEXT = "Choose what to copy"
 SKIP_TEXT = "Skip"
 
 PAGE_HOME = 0
@@ -82,7 +85,7 @@ CLOSE_MOUNTED_TEXT = "Unmount the backup before closing."
 # it copies, so a half-finished run has damaged it without replacing it.
 CANCEL_CONFIRM_TITLE = "Stop the backup?"
 CANCEL_CONFIRM_TEXT = (
-    "Nothing on this computer is changed by stopping.\n\n"
+    "Nothing on the running system is changed by stopping.\n\n"
     "The backup disk is another matter. MBU copies over the previous backup as "
     "it goes, so that older backup is already part way overwritten and will not "
     "be bootable. Stopping now leaves the disk with neither a finished new "
@@ -167,6 +170,7 @@ class MainWindow(QMainWindow):
         reload_inventory: Callable[[], Inventory] | None = None,
         reload_last_run: Callable[[], LastRun | None] | None = None,
         ask_copy_now: Callable[[], bool] | None = None,
+        open_backup_dialog: Callable[[], str | None] | None = None,
         ask_cancel: Callable[[], bool] | None = None,
         start_cancel: Callable[[list[str]], None] | None = None,
         open_dir: Callable[[str], None] | None = None,
@@ -183,6 +187,7 @@ class MainWindow(QMainWindow):
         self.reload_inventory = reload_inventory
         self.reload_last_run = reload_last_run
         self.ask_copy_now = ask_copy_now
+        self.open_backup_dialog = open_backup_dialog
         self.ask_cancel = ask_cancel
         self.start_cancel = start_cancel
         self._cancel_process: LineProcess | None = None
@@ -218,6 +223,11 @@ class MainWindow(QMainWindow):
         title_font.setBold(True)
         title.setFont(title_font)
         layout.addWidget(title)
+
+        mbu_release = read_mbu_release(resolve_paths().mbu_dir)
+        self.versionLabel = QLabel(f"MBU GUI {__version__} · MBU {mbu_release}")
+        self.versionLabel.setObjectName("versionLabel")
+        layout.addWidget(self.versionLabel)
 
         self.statusLabel = QLabel(inventory.status_line)
         self.statusLabel.setObjectName("statusLabel")
@@ -256,7 +266,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.startReasonLabel)
 
         secondary = QHBoxLayout()
-        self.setupButton = QPushButton("Set up this computer")
+        self.setupButton = QPushButton("Set up the running system")
         self.setupButton.setObjectName("setupButton")
         self.setupButton.clicked.connect(self.on_setup_clicked)
         self.formatButton = QPushButton("Prepare a backup disk")
@@ -265,9 +275,13 @@ class MainWindow(QMainWindow):
         self.browseButton = QPushButton("Browse a backup")
         self.browseButton.setObjectName("browseButton")
         self.browseButton.clicked.connect(self.on_browse_clicked)
+        self.aboutButton = QPushButton("About")
+        self.aboutButton.setObjectName("aboutButton")
+        self.aboutButton.clicked.connect(self.on_about_clicked)
         secondary.addWidget(self.setupButton)
         secondary.addWidget(self.formatButton)
         secondary.addWidget(self.browseButton)
+        secondary.addWidget(self.aboutButton)
         layout.addLayout(secondary)
 
         progress_row = QHBoxLayout()
@@ -782,8 +796,17 @@ class MainWindow(QMainWindow):
             return
         self.on_backup_requested()
 
+    def on_about_clicked(self) -> None:
+        AboutDialog(mbu_dir=resolve_paths().mbu_dir, parent=self).exec()
+
     def on_backup_requested(self) -> None:
         if self._running:
+            return
+        if self.open_backup_dialog is not None:
+            fselection = self.open_backup_dialog()
+            if fselection is None:
+                return
+            self._run_backup_with_fselection(fselection)
             return
         dialog = BackupDialog(self.inventory, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -1084,9 +1107,7 @@ class MainWindow(QMainWindow):
             return
         if describe_backup_route(self.inventory) is not None and self._ask_copy_now():
             self.stack.setCurrentIndex(PAGE_HOME)
-            self._run_backup_with_fselection(
-                "-bootfix," + ",".join(self.inventory.live_functions)
-            )
+            self.on_backup_requested()
             return
         self.stack.setCurrentIndex(PAGE_HOME)
 
@@ -1122,7 +1143,8 @@ class MainWindow(QMainWindow):
         box = QMessageBox(self)
         box.setWindowTitle("Backup disk ready")
         box.setText(
-            "Copy everything from this computer onto the new backup disk?\n\n"
+            "Copy from the running system onto the new backup disk?\n"
+            "You will choose which partitions to include.\n\n"
             f"{route}"
         )
         copy_btn = box.addButton(COPY_NOW_TEXT, QMessageBox.ButtonRole.AcceptRole)

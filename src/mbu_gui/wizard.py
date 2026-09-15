@@ -23,14 +23,14 @@ INTRO_TITLE = "What MBU Backup does"
 # and assume they can get back a file they deleted last week. They cannot, and
 # finding that out during a real emergency is the worst possible time.
 INTRO_TEXT = (
-    "MBU makes a complete copy of this computer onto a spare disk, and that "
-    "copy can boot. If this computer's disk dies, you start the backup disk "
+    "MBU makes a complete copy of the running system onto a spare disk, and that "
+    "copy can boot. If the running system's disk dies, you start the backup disk "
     "instead and carry on working.\n\n"
     "It is a mirror, not a file archive. Each backup makes the spare disk "
-    "match this computer exactly, so anything you delete here is deleted from "
+    "match the running system exactly, so anything you delete here is deleted from "
     "the backup on the next run. It protects you from a dead disk or a stolen "
     "computer. It does not let you recover last week's version of a file.\n\n"
-    "This will take you through the three steps: naming this computer, "
+    "This will take you through the three steps: naming the running system, "
     "preparing a spare disk, and making the first backup."
 )
 
@@ -41,7 +41,7 @@ STEP_DONE = "done"
 STEP_BLOCKED = "blocked"
 
 _TITLES = {
-    STEP_SETUP: "Name this computer",
+    STEP_SETUP: "Name the running system",
     STEP_FORMAT: "Prepare a backup disk",
     STEP_BACKUP: "Make the first backup",
 }

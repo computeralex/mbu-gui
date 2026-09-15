@@ -75,11 +75,11 @@ def test_sfdisk_chatter_never_reaches_the_user():
 def test_a_rename_is_reported_in_plain_words():
     assert (
         plain_label_line("Partition name changed from '' to 'main-efi'.")
-        == "Named this computer's main-efi partition"
+        == "Named the running system's main-efi partition"
     )
     assert (
         plain_label_line("Partition name changed from 'Winux' to 'main-root'.")
-        == "Named this computer's main-root partition"
+        == "Named the running system's main-root partition"
     )
 
 
@@ -137,11 +137,11 @@ def test_copied_bytes_come_from_rsync_total_size_lines():
 def test_backup_summary_uses_size_when_known_and_never_fakes_one():
     assert (
         backup_summary(from_set="main", to_set="backuptest", copied_bytes=12_884_901_888)
-        == "Copied about 12 GB from this computer (main) onto backuptest."
+        == "Copied about 12 GB from the running system (main) onto backuptest."
     )
     assert (
         backup_summary(from_set="main", to_set="bak1", copied_bytes=None)
-        == "Copied from this computer (main) onto bak1."
+        == "Copied from the running system (main) onto bak1."
     )
 
 

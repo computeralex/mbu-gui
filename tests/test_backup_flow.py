@@ -133,7 +133,7 @@ def test_failed_backup_still_warns_to_unplug():
     assert failed_command_message(1) in w.logView.toPlainText()
     assert not w.unplugBanner.isHidden()
     assert "did not finish" in w.unplugBanner.text()
-    assert "Unplug the backup disk anyway" in w.unplugBanner.text()
+    assert "Partial clone" in w.unplugBanner.text()
 
 
 def test_crashed_backup_warns_on_next_launch():

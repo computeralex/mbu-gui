@@ -9,9 +9,16 @@ def test_policy_exec_path():
 
 def test_control_depends():
     text = Path("packaging/debian/control").read_text()
-    for dep in ["python3", "policykit-1", "rsync", "gdisk"]:
+    for dep in ["python3", "policykit-1", "rsync", "gdisk", "libxcb-cursor0"]:
         assert dep in text
     assert "python3-pyside6" not in text
+    assert "0.1.0~alpha2" in text
+
+
+def test_readme_has_uninstall():
+    text = Path("README.md").read_text()
+    assert "sudo apt remove mbu-gui" in text
+    assert "~/.config/mbu-gui" in text
 
 
 def test_readme_pip_uses_break_system_packages():
