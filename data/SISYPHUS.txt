@@ -1,0 +1,13 @@
+# Sisyphus busy animation for the backup progress row
+#
+# Drop one of these files next to this note (same folder: data/):
+#   sisyphus.gif
+#   sisyphus.webp
+#
+# Requirements:
+# - Short seamless loop (stick figure rolling a boulder uphill is the brief)
+# - Modest size (keep under ~500KB if you can)
+# - License you are happy shipping with this MIT GUI
+#
+# Rebuild/reinstall the .deb after adding the file. The GUI looks for
+# /usr/share/mbu-gui/sisyphus.{gif,webp} or data/sisyphus.* when run from git.

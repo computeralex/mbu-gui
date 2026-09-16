@@ -2,10 +2,10 @@
 # One-line install for MBU GUI alpha. This is not a finished release.
 set -euo pipefail
 
-REF="${MBU_GUI_REF:-v0.1.0-alpha.7}"
+REF="${MBU_GUI_REF:-v0.1.0-alpha.8}"
 SRC="${MBU_GUI_SRC:-https://github.com/computeralex/mbu-gui.git}"
 DEST="${MBU_GUI_DIR:-$HOME/mbu-gui}"
-DEB_NAME="mbu-gui_0.1.0~alpha7_all.deb"
+DEB_NAME="mbu-gui_0.1.0~alpha8_all.deb"
 
 say() { printf '%s\n' "$*"; }
 die() { say "$*" >&2; exit 1; }
@@ -27,7 +27,7 @@ cat <<'EOF'
 
   MBU GUI  —  ALPHA
 
-  This is 0.1.0-alpha.7, for testing only. It can erase a disk.
+  This is 0.1.0-alpha.8, for testing only. It can erase a disk.
   Make a copy of anything you care about before you continue.
 
   It is a mirror, not a file archive: what you delete here is

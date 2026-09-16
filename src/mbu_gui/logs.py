@@ -59,15 +59,14 @@ def last_run_label(run: LastRun | None) -> str:
 
 
 SYNC_START_RE = re.compile(r"^START Directory SYNC FROM (?P<frm>\S+) TO (?P<to>\S+)")
+BOOT_FIX_START_RE = re.compile(
+    r"^(Recreating EFI partition|Copy files from .+ to EFI partition|Fixed BOOTABILITY OK)"
+)
+BOOT_FIX_LABEL = "Boot fix"
 
 
 def sync_target(line: str) -> str | None:
-    """Name of the thing MBU just started copying, or None for other lines.
-
-    MBU announces each partition it syncs. rsync itself is run without
-    --info=progress2, so there are no byte totals to read; these markers are
-    the only honest progress signal available without changing MBU.
-    """
+    """Name of the partition MBU just started copying, or None."""
     m = SYNC_START_RE.match(line.strip())
     if m is None:
         return None
@@ -75,20 +74,23 @@ def sync_target(line: str) -> str | None:
     return dest.rsplit("/", 1)[-1] or dest
 
 
-def progress_label(done: int, total: int, target: str, files: int) -> str:
-    """Human progress line for the backup bar.
+def boot_fix_phase_name(line: str) -> str | None:
+    """Return 'Boot fix' when MBU starts/does the bootability step."""
+    if BOOT_FIX_START_RE.match(line.strip()):
+        return BOOT_FIX_LABEL
+    return None
 
-    done is the 1-based index of the partition currently copying (not how many
-    have finished). Boot-fix is not a partition and must not appear in total.
-    """
+
+def progress_label(done: int, total: int, target: str, files: int) -> str:
+    """Human progress line: 'Copying root 1 of 3' (includes Boot fix when selected)."""
     if target:
         where = f"Copying {target}"
     else:
         where = "Copying"
     if total > 0 and done > 0:
-        step = f"{where} — partition {done} of {total}"
+        step = f"{where} {done} of {total}"
     elif total > 0:
-        step = f"{where} — {total} partitions"
+        step = f"{where} — {total} steps"
     else:
         step = where
     if files:
@@ -96,9 +98,22 @@ def progress_label(done: int, total: int, target: str, files: int) -> str:
     return step
 
 
-def partition_count_from_fselection(fselection: str) -> int:
-    """How many partition copy phases a backup fselection will run."""
-    return len([f for f in fselection.split(",") if f and not f.startswith("-")])
+def phase_names_from_fselection(fselection: str) -> list[str]:
+    """Checkbox-shaped phase list: Boot fix first if selected, then partitions."""
+    names: list[str] = []
+    for part in fselection.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if token == "-bootfix":
+            names.append(BOOT_FIX_LABEL)
+        elif not token.startswith("-"):
+            names.append(token)
+    return names
+
+
+def phase_count_from_fselection(fselection: str) -> int:
+    return len(phase_names_from_fselection(fselection))
 
 
 _RENAMED_RE = re.compile(

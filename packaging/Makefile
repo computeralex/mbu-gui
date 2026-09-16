@@ -1,5 +1,5 @@
 PKG := mbu-gui
-VERSION := 0.1.0~alpha7
+VERSION := 0.1.0~alpha8
 ARCH := all
 DEB := $(PKG)_$(VERSION)_$(ARCH).deb
 
@@ -25,6 +25,9 @@ deb:
 	cp -a $(REPO)/src/mbu_gui_helper $(DEST)/usr/lib/mbu-gui/mbu_gui_helper
 	cp -a $(REPO)/vendor/mbu $(DEST)/usr/share/mbu-gui/mbu
 	cp $(REPO)/data/mbu-icon.png $(DEST)/usr/share/mbu-gui/mbu-icon.png
+	@for f in sisyphus.gif sisyphus.webp; do \
+		if [ -f $(REPO)/data/$$f ]; then cp $(REPO)/data/$$f $(DEST)/usr/share/mbu-gui/; fi; \
+	done
 	cp $(REPO)/data/mbu-gui.desktop $(DEST)/usr/share/applications/mbu-gui.desktop
 	cp $(REPO)/data/org.linuxbackupsoftware.mbu-gui.policy \
 		$(DEST)/usr/share/polkit-1/actions/org.linuxbackupsoftware.mbu-gui.policy

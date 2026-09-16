@@ -19,7 +19,7 @@ BOOT_FIX_WARN = (
     "Without boot fix, the backup disk might not boot if you copy root, boot, or efi."
 )
 PARTITIONS_LABEL = "Partitions to copy"
-BOOT_FIX_LABEL = "Boot repair (not a partition — does not count in copy progress)"
+BOOT_FIX_LABEL = "Boot repair (counts as its own step in progress)"
 UNKNOWN_DESTINATION_TEXT = (
     "Cannot tell which disk would be overwritten, so this backup will not start. "
     "Go back, make sure exactly one backup disk is plugged in, and try again."

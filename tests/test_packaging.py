@@ -12,7 +12,7 @@ def test_control_depends():
     for dep in ["python3", "policykit-1", "rsync", "gdisk", "libxcb-cursor0"]:
         assert dep in text
     assert "python3-pyside6" not in text
-    assert "0.1.0~alpha7" in text
+    assert "0.1.0~alpha8" in text
 
 
 def test_readme_has_uninstall():
@@ -33,6 +33,12 @@ def test_package_ships_root_owned_state_dir():
     text = Path("packaging/Makefile").read_text()
     assert "$(DEST)/var/lib/mbu-gui" in text
     assert "--root-owner-group" in text
+
+
+def test_makefile_ships_sisyphus_when_present():
+    text = Path("packaging/Makefile").read_text()
+    assert "sisyphus.gif" in text
+    assert "sisyphus.webp" in text
 
 
 def test_install_script_allows_downgrades():
