@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from mbu_gui.backup_prefs import load_backup_selection, save_backup_selection
+from mbu_gui.buttons import style_primary, style_secondary
 from mbu_gui.disks import Inventory, describe_backup_route
 
 BOOT_FIX_WARN = (
@@ -79,6 +80,11 @@ class BackupDialog(QDialog):
 
         self.okButton = buttons.button(QDialogButtonBox.StandardButton.Ok)
         self.okButton.setObjectName("okButton")
+        self.okButton.setText("Start backup")
+        cancel = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel is not None:
+            style_secondary(cancel)
+        style_primary(self.okButton)
         self._apply_saved_selection()
         self._sync_ok()
 

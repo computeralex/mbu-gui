@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from mbu_gui.buttons import style_primary, style_secondary
 from mbu_gui.disks import Inventory
 from mbu_gui.paths import resolve_paths
 
@@ -67,10 +68,15 @@ class BrowsePage(QWidget):
         self.unmountButton.setObjectName("unmountButton")
         self.leaveButton = QPushButton("Cancel")
         self.leaveButton.setObjectName("leaveButton")
+        style_secondary(self.leaveButton)
+        style_primary(self.mountButton)
+        style_secondary(self.openButton)
+        style_secondary(self.unmountButton)
+        buttons.addWidget(self.leaveButton)
+        buttons.addStretch(1)
         buttons.addWidget(self.mountButton)
         buttons.addWidget(self.openButton)
         buttons.addWidget(self.unmountButton)
-        buttons.addWidget(self.leaveButton)
         layout.addLayout(buttons)
 
         self.setList.itemSelectionChanged.connect(self._sync_enabled)

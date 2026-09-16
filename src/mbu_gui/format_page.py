@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from mbu_gui.buttons import add_leave_proceed_row
 from mbu_gui.disks import (
     NO_DISK_ID_TEXT,
     Disk,
@@ -119,8 +120,7 @@ class FormatPage(QWidget):
         self.formatButton.setObjectName("formatButton")
         self.leaveButton = QPushButton("Cancel")
         self.leaveButton.setObjectName("leaveButton")
-        buttons.addWidget(self.formatButton)
-        buttons.addWidget(self.leaveButton)
+        add_leave_proceed_row(buttons, self.leaveButton, self.formatButton)
         layout.addLayout(buttons)
 
         self._auto_pset = ""

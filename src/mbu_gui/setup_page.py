@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from mbu_gui.buttons import add_leave_proceed_row
 from mbu_gui.disks import (
     Inventory,
     describe_disk,
@@ -104,8 +105,7 @@ class SetupPage(QWidget):
         leave_text = "Leave them alone" if already else "Cancel"
         self.leaveButton = QPushButton(leave_text)
         self.leaveButton.setObjectName("leaveButton")
-        buttons.addWidget(self.applyButton)
-        buttons.addWidget(self.leaveButton)
+        add_leave_proceed_row(buttons, self.leaveButton, self.applyButton)
         layout.addLayout(buttons)
 
         self.setNameEdit.textChanged.connect(self._on_set_name_changed)
