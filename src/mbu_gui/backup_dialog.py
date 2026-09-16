@@ -18,6 +18,8 @@ from mbu_gui.disks import Inventory, describe_backup_route
 BOOT_FIX_WARN = (
     "Without boot fix, the backup disk might not boot if you copy root, boot, or efi."
 )
+PARTITIONS_LABEL = "Partitions to copy"
+BOOT_FIX_LABEL = "Boot repair (not a partition — does not count in copy progress)"
 UNKNOWN_DESTINATION_TEXT = (
     "Cannot tell which disk would be overwritten, so this backup will not start. "
     "Go back, make sure exactly one backup disk is plugged in, and try again."
@@ -51,6 +53,23 @@ class BackupDialog(QDialog):
         self.destinationLabel.setFont(destination_font)
         layout.addWidget(self.destinationLabel)
 
+        partitions_heading = QLabel(PARTITIONS_LABEL)
+        partitions_heading.setObjectName("partitionsHeading")
+        layout.addWidget(partitions_heading)
+
+        for function in inventory.live_functions:
+            box = QCheckBox(function)
+            box.setObjectName(f"functionCheck_{function}")
+            box.setChecked(True)
+            box.toggled.connect(self._sync_ok)
+            self._function_checks.append((function, box))
+            layout.addWidget(box)
+
+        boot_heading = QLabel(BOOT_FIX_LABEL)
+        boot_heading.setObjectName("bootFixHeading")
+        boot_heading.setWordWrap(True)
+        layout.addWidget(boot_heading)
+
         self.bootFixCheck = QCheckBox("Boot fix")
         self.bootFixCheck.setObjectName("bootFixCheck")
         self.bootFixCheck.setChecked(True)
@@ -62,14 +81,6 @@ class BackupDialog(QDialog):
         self.bootFixWarnLabel.setVisible(False)
         layout.addWidget(self.bootFixWarnLabel)
         self.bootFixCheck.toggled.connect(self._on_boot_fix_toggled)
-
-        for function in inventory.live_functions:
-            box = QCheckBox(function)
-            box.setObjectName(f"functionCheck_{function}")
-            box.setChecked(True)
-            box.toggled.connect(self._sync_ok)
-            self._function_checks.append((function, box))
-            layout.addWidget(box)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel

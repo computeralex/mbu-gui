@@ -4,7 +4,7 @@ from mbu_gui.version import __version__, read_mbu_release
 
 
 def test_gui_version_is_alpha2():
-    assert __version__ == "0.1.0-alpha.6"
+    assert __version__ == "0.1.0-alpha.7"
 
 
 def test_read_mbu_release_from_readme_marker(tmp_path: Path):

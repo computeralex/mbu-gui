@@ -181,6 +181,26 @@ def test_successful_backup_uses_the_plain_unplug_text():
     assert "Unplug the backup disk now" in w.unplugBanner.text()
 
 
+def test_unplug_banner_clears_when_backup_disk_is_removed():
+    app()
+    from dataclasses import replace
+
+    named = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    no_backup = replace(named, backup_sets=[])
+    w = MainWindow(
+        inventory=named,
+        last_run=None,
+        helper_exists=True,
+        pkexec_exists=True,
+        start_process=lambda argv: None,
+        helper_path=Path("/usr/lib/mbu-gui/mbu-gui-helper"),
+    )
+    w.on_helper_finished(0)
+    assert "Unplug the backup disk now" in w.unplugBanner.text()
+    w._apply_inventory(no_backup)
+    assert w.unplugBanner.isHidden()
+
+
 def test_cancelled_pkexec_message():
     app()
     inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
