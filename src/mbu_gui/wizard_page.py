@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from mbu_gui.buttons import add_leave_proceed_row
 from mbu_gui.disks import Inventory, describe_backup_route
 from mbu_gui.wizard import INTRO_TEXT, INTRO_TITLE, resume_note
 
@@ -71,8 +72,7 @@ class WizardIntroPage(QWidget):
         self.startButton.setObjectName("wizardStartButton")
         self.leaveButton = QPushButton(WIZARD_LEAVE_TEXT)
         self.leaveButton.setObjectName("wizardLeaveButton")
-        buttons.addWidget(self.startButton)
-        buttons.addWidget(self.leaveButton)
+        add_leave_proceed_row(buttons, self.leaveButton, self.startButton)
         layout.addLayout(buttons)
 
         self.update_for(inventory)
@@ -130,8 +130,7 @@ class WizardFinishPage(QWidget):
         self.backupButton.setObjectName("wizardBackupButton")
         self.laterButton = QPushButton(FINISH_LATER_TEXT)
         self.laterButton.setObjectName("wizardLaterButton")
-        buttons.addWidget(self.backupButton)
-        buttons.addWidget(self.laterButton)
+        add_leave_proceed_row(buttons, self.laterButton, self.backupButton)
         layout.addLayout(buttons)
 
     def set_step(self, text: str) -> None:

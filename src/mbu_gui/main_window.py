@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from mbu_gui.backup_dialog import UNKNOWN_DESTINATION_TEXT, BackupDialog
 from mbu_gui.about_dialog import AboutDialog
 from mbu_gui.browse_page import BrowsePage, UNMOUNT_FAIL_TEXT
+from mbu_gui.buttons import style_primary, style_secondary
 from mbu_gui.disks import (
     Inventory,
     RESTART_TO_FINISH_TEXT,
@@ -235,6 +236,7 @@ class MainWindow(QMainWindow):
         self.startButton.setMinimumHeight(36)
         self.startButton.setEnabled(self._next_step.enabled)
         self.startButton.clicked.connect(self.on_start_clicked)
+        style_primary(self.startButton)
         layout.addWidget(self.startButton)
 
         self.blockedHeadlineLabel = QLabel("")
@@ -265,6 +267,13 @@ class MainWindow(QMainWindow):
         self.aboutButton = QPushButton("About")
         self.aboutButton.setObjectName("aboutButton")
         self.aboutButton.clicked.connect(self.on_about_clicked)
+        for button in (
+            self.setupButton,
+            self.formatButton,
+            self.browseButton,
+            self.aboutButton,
+        ):
+            style_secondary(button)
         secondary.addWidget(self.setupButton)
         secondary.addWidget(self.formatButton)
         secondary.addWidget(self.browseButton)
@@ -278,6 +287,7 @@ class MainWindow(QMainWindow):
         self.cancelButton = QPushButton("Stop")
         self.cancelButton.setObjectName("cancelButton")
         self.cancelButton.clicked.connect(self.on_cancel_clicked)
+        style_secondary(self.cancelButton)
         progress_row.addWidget(self.progressBar, 1)
         progress_row.addWidget(self.cancelButton)
         self.progressBar.hide()
@@ -1134,7 +1144,9 @@ class MainWindow(QMainWindow):
             "You will choose which partitions to include.\n\n"
             f"{route}"
         )
-        copy_btn = box.addButton(COPY_NOW_TEXT, QMessageBox.ButtonRole.AcceptRole)
+        # Reject first so platform layouts keep leave on the left / proceed right.
         box.addButton(SKIP_TEXT, QMessageBox.ButtonRole.RejectRole)
+        copy_btn = box.addButton(COPY_NOW_TEXT, QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(copy_btn)
         box.exec()
         return box.clickedButton() == copy_btn
