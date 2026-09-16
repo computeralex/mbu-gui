@@ -21,14 +21,12 @@ def app():
     return _app
 
 
-def test_home_shows_versions():
+def test_home_has_about_not_inline_versions():
     app()
     inv = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
     w = MainWindow(inventory=inv, last_run=None)
-    text = w.versionLabel.text()
-    assert __version__ in text
-    assert "MBU GUI" in text
-    assert "MBU" in text
+    assert w.aboutButton.text() == "About"
+    assert not hasattr(w, "versionLabel")
 
 
 def test_about_dialog_lists_both_versions(tmp_path: Path):

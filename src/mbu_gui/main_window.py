@@ -49,7 +49,6 @@ from mbu_gui.logs import (
 from mbu_gui.paths import resolve_paths
 from mbu_gui.process import LineProcess
 from mbu_gui.setup_page import SetupPage
-from mbu_gui.version import __version__, read_mbu_release
 from mbu_gui.wizard import (
     STEP_BACKUP,
     STEP_FORMAT,
@@ -216,18 +215,6 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(self.homePage)
         layout.setSpacing(4)
         layout.setContentsMargins(12, 8, 12, 8)
-
-        title = QLabel("MBU Backup")
-        title_font = QFont(title.font())
-        title_font.setPointSize(title_font.pointSize() + 3)
-        title_font.setBold(True)
-        title.setFont(title_font)
-        layout.addWidget(title)
-
-        mbu_release = read_mbu_release(resolve_paths().mbu_dir)
-        self.versionLabel = QLabel(f"MBU GUI {__version__} · MBU {mbu_release}")
-        self.versionLabel.setObjectName("versionLabel")
-        layout.addWidget(self.versionLabel)
 
         self.statusLabel = QLabel(inventory.status_line)
         self.statusLabel.setObjectName("statusLabel")
