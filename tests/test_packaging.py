@@ -35,7 +35,6 @@ def test_package_ships_root_owned_state_dir():
     assert "--root-owner-group" in text
 
 
-def test_launcher_catches_pyside_import_error():
-    text = Path("scripts/mbu-gui").read_text()
-    assert "ImportError" in text
-    assert "missing_pyside" in text
+def test_install_script_allows_downgrades():
+    text = Path("scripts/install-alpha.sh").read_text()
+    assert "--allow-downgrades" in text

@@ -75,7 +75,9 @@ say "Building the package..."
 make -C "$DEST/packaging" deb
 
 say "Installing $DEB_NAME..."
-sudo apt-get install -y "$DEST/packaging/$DEB_NAME"
+# Alpha tags use 0.1.0~alphaN. A machine that once had a differently numbered
+# local build can make apt treat the alpha as a "downgrade" and refuse -y.
+sudo apt-get install -y --allow-downgrades "$DEST/packaging/$DEB_NAME"
 
 say "Installing PySide6 (Ubuntu 24.04 has no package for it)..."
 pip3 install --user --break-system-packages PySide6
