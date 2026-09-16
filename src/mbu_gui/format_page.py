@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mbu_gui.buttons import add_leave_proceed_row
+from mbu_gui.buttons import add_leave_proceed_row, style_secondary
 from mbu_gui.disks import (
     NO_DISK_ID_TEXT,
     Disk,
@@ -28,7 +28,11 @@ from mbu_gui.disks import (
 )
 
 WIPE_WARNING = "This will erase the disk."
-EMPTY_DISK_TEXT = "Plug in a new disk that is not the running system's disk."
+EMPTY_DISK_TEXT = (
+    "Plug in a spare disk that is not the running system's disk, "
+    "then click Refresh disks."
+)
+REFRESH_DISKS_TEXT = "Refresh disks"
 CONFIRM_PROMPT = "Type the confirmation code for the disk you selected"
 PARTITION_HEADERS = ["device", "size", "mount", "current label"]
 SET_NAME_LABEL = "Name for this backup set (your choice)"
@@ -71,10 +75,16 @@ class FormatPage(QWidget):
         self.emptyDiskLabel.setWordWrap(True)
         layout.addWidget(self.emptyDiskLabel)
 
+        disk_row = QHBoxLayout()
         self.diskList = QListWidget()
         self.diskList.setObjectName("diskList")
         self.diskList.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        layout.addWidget(self.diskList)
+        disk_row.addWidget(self.diskList, 1)
+        self.refreshButton = QPushButton(REFRESH_DISKS_TEXT)
+        self.refreshButton.setObjectName("refreshButton")
+        style_secondary(self.refreshButton)
+        disk_row.addWidget(self.refreshButton, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(disk_row)
 
         self.diskInfoLabel = QLabel("")
         self.diskInfoLabel.setObjectName("diskInfoLabel")

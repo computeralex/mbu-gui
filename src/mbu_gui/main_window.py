@@ -459,6 +459,22 @@ class MainWindow(QMainWindow):
     def _wire_format_page(self) -> None:
         self.formatPage.formatButton.clicked.connect(self.on_format_apply)
         self.formatPage.leaveButton.clicked.connect(self.on_format_leave)
+        self.formatPage.refreshButton.clicked.connect(self.on_format_refresh)
+
+    def on_format_refresh(self) -> None:
+        """Re-scan disks after the user plugs in a spare (wizard or standalone)."""
+        if self._running:
+            return
+        wizard = self._wizard_active
+        self.refresh()
+        if not wizard:
+            # Standalone prepare: stay on this page with the new inventory.
+            if self.stack.currentIndex() != PAGE_FORMAT:
+                self.stack.setCurrentIndex(PAGE_FORMAT)
+            return
+        # Wizard: jump to whatever step the new inventory implies (e.g. an
+        # already-prepared disk may skip straight to backup).
+        self._wizard_advance()
 
     def _wire_browse_page(self) -> None:
         self.browsePage.mountButton.clicked.connect(self.on_mount_apply)
