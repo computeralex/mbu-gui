@@ -76,11 +76,29 @@ def sync_target(line: str) -> str | None:
 
 
 def progress_label(done: int, total: int, target: str, files: int) -> str:
-    where = f"Copying {target}" if target else "Copying"
-    step = f"{where} ({done} of {total})" if total else where
+    """Human progress line for the backup bar.
+
+    done is the 1-based index of the partition currently copying (not how many
+    have finished). Boot-fix is not a partition and must not appear in total.
+    """
+    if target:
+        where = f"Copying {target}"
+    else:
+        where = "Copying"
+    if total > 0 and done > 0:
+        step = f"{where} — partition {done} of {total}"
+    elif total > 0:
+        step = f"{where} — {total} partitions"
+    else:
+        step = where
     if files:
         return f"{step} — {files:,} files so far"
     return step
+
+
+def partition_count_from_fselection(fselection: str) -> int:
+    """How many partition copy phases a backup fselection will run."""
+    return len([f for f in fselection.split(",") if f and not f.startswith("-")])
 
 
 _RENAMED_RE = re.compile(

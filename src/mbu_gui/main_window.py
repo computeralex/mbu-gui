@@ -41,6 +41,7 @@ from mbu_gui.logs import (
     copied_bytes_from_lines,
     current_file_from_line,
     last_run_label,
+    partition_count_from_fselection,
     plain_label_line,
     progress_label,
     route_sets_from_lines,
@@ -566,6 +567,11 @@ class MainWindow(QMainWindow):
         self._replace_setup_page(inventory)
         self._replace_format_page(inventory)
         self._replace_browse_page(inventory)
+        # Unplug banners only matter while a backup disk is still attached.
+        if not inventory.backup_sets:
+            self.show_unplug(False)
+        elif self._backup_unfinished:
+            self.show_unplug(True, text=UNPLUG_UNFINISHED_TEXT)
 
     def _apply_last_run(self, last_run: LastRun | None) -> None:
         self.last_run = last_run
@@ -691,21 +697,24 @@ class MainWindow(QMainWindow):
         self.show_current_file(current or "")
 
     def _start_progress(self, fselection: str) -> None:
-        # The requested functions tell us how many partitions MBU will copy, so
-        # the bar can be a real fraction rather than a spinner. Flags such as
-        # -bootfix are instructions, not partitions, and must not be counted.
-        self._phases_total = len(
-            [f for f in fselection.split(",") if f and not f.startswith("-")]
-        )
+        # Partition copies only — flags such as -bootfix are not phases.
+        self._phases_total = partition_count_from_fselection(fselection)
         self._phases_done = 0
         self._phase_files = 0
         self._phase_target = ""
         self.summaryLabel.hide()
         self.summaryLabel.setText("")
         self.show_current_file("")
-        self.progressBar.setMaximum(max(self._phases_total, 1))
+        # Indeterminate while a partition is copying: MBU/rsync give no byte
+        # totals, and a stuck 0/N bar reads as broken.
+        self.progressBar.setMaximum(0)
         self.progressBar.setValue(0)
-        self.progressBar.setFormat("Starting")
+        if self._phases_total:
+            self.progressBar.setFormat(
+                f"Starting backup — {self._phases_total} partitions"
+            )
+        else:
+            self.progressBar.setFormat("Starting backup")
         self.progressBar.setTextVisible(True)
         self.progressBar.show()
         self._cancelling = False
@@ -720,10 +729,11 @@ class MainWindow(QMainWindow):
             self.summaryLabel.hide()
             self.summaryLabel.setText("")
             return
+        # Leave busy mode so a full bar can show completion briefly via summary.
         self.progressBar.setMaximum(1)
         self.progressBar.setValue(1)
-        self.progressBar.setFormat("")
-        self.progressBar.setTextVisible(False)
+        self.progressBar.setFormat("Backup finished")
+        self.progressBar.setTextVisible(True)
         self.summaryLabel.setText(summary)
         self.summaryLabel.setVisible(bool(summary))
 
@@ -1036,8 +1046,8 @@ class MainWindow(QMainWindow):
         else:
             return
         total = max(self._phases_total, self._phases_done)
-        self.progressBar.setMaximum(total)
-        self.progressBar.setValue(max(self._phases_done - 1, 0))
+        # Stay indeterminate for the whole run; the text carries partition N of M.
+        self.progressBar.setMaximum(0)
         self.progressBar.setFormat(
             progress_label(
                 self._phases_done, total, self._phase_target, self._phase_files

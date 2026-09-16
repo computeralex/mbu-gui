@@ -275,19 +275,21 @@ def test_backup_progress_counts_partitions_not_flags():
     w = _runnable_window(inv)
     w._run_backup_with_fselection("-bootfix,efi,root,home")
     assert not w.progressBar.isHidden()
-    assert w.progressBar.maximum() == 3
+    # Busy/indeterminate: MBU has no byte progress within a partition.
+    assert w.progressBar.maximum() == 0
+    assert "3 partitions" in w.progressBar.format()
 
     w._on_helper_line("START Directory SYNC FROM /boot/efi TO /mnt/bak1/efi")
     w._on_helper_line("EFI/ubuntu/grubx64.efi")
     w._on_helper_line("EFI/ubuntu/shimx64.efi")
-    assert "Copying efi (1 of 3)" in w.progressBar.format()
+    assert "Copying efi — partition 1 of 3" in w.progressBar.format()
     assert "2 files" in w.progressBar.format()
+    assert w.progressBar.maximum() == 0
 
     w._on_helper_line("START Directory SYNC FROM / TO /mnt/bak1/root")
-    assert "Copying root (2 of 3)" in w.progressBar.format()
+    assert "Copying root — partition 2 of 3" in w.progressBar.format()
     # The file count belongs to the partition being copied, not the whole run.
     assert "files" not in w.progressBar.format()
-    assert w.progressBar.value() == 1
 
 
 def test_a_failed_backup_does_not_leave_a_progress_bar_claiming_success():
