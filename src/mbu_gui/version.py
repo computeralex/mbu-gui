@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-__version__ = "0.1.0-alpha.7"
+__version__ = "0.1.0-alpha.8"
 
 _RELEASE_RE = re.compile(r"^#\s*MBU Release\s+(mbu-\d{8})\s*$", re.MULTILINE)
 _CANDIDATES = ("mbu-README.txt", "README.md")

@@ -50,11 +50,12 @@ def test_sync_markers_name_the_partition_being_copied():
 
 
 def test_progress_label_reads_as_a_sentence():
-    assert progress_label(1, 3, "efi", 0) == "Copying efi — partition 1 of 3"
+    assert progress_label(1, 3, "efi", 0) == "Copying efi 1 of 3"
     assert (
         progress_label(2, 3, "root", 12345)
-        == "Copying root — partition 2 of 3 — 12,345 files so far"
+        == "Copying root 2 of 3 — 12,345 files so far"
     )
+    assert progress_label(1, 3, "Boot fix", 0) == "Copying Boot fix 1 of 3"
 
 
 def test_sfdisk_chatter_never_reaches_the_user():

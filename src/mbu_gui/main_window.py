@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QFont, QFontMetrics, QIcon
+from PySide6.QtGui import QFont, QFontMetrics, QIcon, QMovie
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -38,10 +38,11 @@ from mbu_gui.helper_client import explain_helper_failure, pkexec_argv, which_hel
 from mbu_gui.logs import (
     LastRun,
     backup_summary,
+    boot_fix_phase_name,
     copied_bytes_from_lines,
     current_file_from_line,
     last_run_label,
-    partition_count_from_fselection,
+    phase_count_from_fselection,
     plain_label_line,
     progress_label,
     route_sets_from_lines,
@@ -151,6 +152,19 @@ def _icon_candidates() -> tuple[Path, ...]:
     )
 
 
+def _sisyphus_path() -> Path | None:
+    repo = Path(__file__).resolve().parents[2]
+    for candidate in (
+        Path("/usr/share/mbu-gui/sisyphus.gif"),
+        Path("/usr/share/mbu-gui/sisyphus.webp"),
+        repo / "data" / "sisyphus.gif",
+        repo / "data" / "sisyphus.webp",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _icon_path() -> Path | None:
     for candidate in _icon_candidates():
         if candidate.exists():
@@ -206,6 +220,8 @@ class MainWindow(QMainWindow):
         self._phases_done = 0
         self._phase_files = 0
         self._phase_target = ""
+        self._boot_fix_phase_seen = False
+        self._sisyphus_movie: QMovie | None = None
 
         self.setWindowTitle("MBU Backup")
         icon = _icon_path()
@@ -282,6 +298,11 @@ class MainWindow(QMainWindow):
         layout.addLayout(secondary)
 
         progress_row = QHBoxLayout()
+        self.sisyphusLabel = QLabel("")
+        self.sisyphusLabel.setObjectName("sisyphusLabel")
+        self.sisyphusLabel.setFixedSize(48, 48)
+        self.sisyphusLabel.setScaledContents(True)
+        self.sisyphusLabel.hide()
         self.progressBar = QProgressBar()
         self.progressBar.setObjectName("progressBar")
         self.progressBar.setTextVisible(True)
@@ -289,10 +310,12 @@ class MainWindow(QMainWindow):
         self.cancelButton.setObjectName("cancelButton")
         self.cancelButton.clicked.connect(self.on_cancel_clicked)
         style_secondary(self.cancelButton)
+        progress_row.addWidget(self.sisyphusLabel)
         progress_row.addWidget(self.progressBar, 1)
         progress_row.addWidget(self.cancelButton)
         self.progressBar.hide()
         self.cancelButton.hide()
+        self._init_sisyphus()
 
         self.summaryLabel = QLabel("")
         self.summaryLabel.setObjectName("summaryLabel")
@@ -696,27 +719,50 @@ class MainWindow(QMainWindow):
         current = current_file_from_line(clean)
         self.show_current_file(current or "")
 
+    def _init_sisyphus(self) -> None:
+        path = _sisyphus_path()
+        if path is None:
+            return
+        movie = QMovie(str(path))
+        if not movie.isValid():
+            return
+        movie.setScaledSize(QSize(48, 48))
+        self._sisyphus_movie = movie
+        self.sisyphusLabel.setMovie(movie)
+
+    def _show_sisyphus(self, running: bool) -> None:
+        if self._sisyphus_movie is None:
+            self.sisyphusLabel.hide()
+            return
+        if running:
+            self.sisyphusLabel.show()
+            self._sisyphus_movie.start()
+        else:
+            self._sisyphus_movie.stop()
+            self.sisyphusLabel.hide()
+
     def _start_progress(self, fselection: str) -> None:
-        # Partition copies only — flags such as -bootfix are not phases.
-        self._phases_total = partition_count_from_fselection(fselection)
+        # Every checked item counts — including Boot fix — so the N of M matches
+        # what the user saw in the dialog.
+        self._phases_total = phase_count_from_fselection(fselection)
         self._phases_done = 0
         self._phase_files = 0
         self._phase_target = ""
+        self._boot_fix_phase_seen = False
         self.summaryLabel.hide()
         self.summaryLabel.setText("")
         self.show_current_file("")
-        # Indeterminate while a partition is copying: MBU/rsync give no byte
-        # totals, and a stuck 0/N bar reads as broken.
         self.progressBar.setMaximum(0)
         self.progressBar.setValue(0)
         if self._phases_total:
             self.progressBar.setFormat(
-                f"Starting backup — {self._phases_total} partitions"
+                f"Starting backup — {self._phases_total} steps"
             )
         else:
             self.progressBar.setFormat("Starting backup")
         self.progressBar.setTextVisible(True)
         self.progressBar.show()
+        self._show_sisyphus(True)
         self._cancelling = False
         self.cancelButton.setEnabled(True)
         self.cancelButton.show()
@@ -724,12 +770,12 @@ class MainWindow(QMainWindow):
     def _finish_progress(self, ok: bool, summary: str = "") -> None:
         self.cancelButton.hide()
         self.show_current_file("")
+        self._show_sisyphus(False)
         if not ok:
             self.progressBar.hide()
             self.summaryLabel.hide()
             self.summaryLabel.setText("")
             return
-        # Leave busy mode so a full bar can show completion briefly via summary.
         self.progressBar.setMaximum(1)
         self.progressBar.setValue(1)
         self.progressBar.setFormat("Backup finished")
@@ -1037,16 +1083,21 @@ class MainWindow(QMainWindow):
 
     def _track_progress(self, text: str) -> None:
         target = sync_target(text)
+        boot_fix = boot_fix_phase_name(text)
         if target is not None:
             self._phases_done += 1
             self._phase_target = target
+            self._phase_files = 0
+        elif boot_fix is not None and not self._boot_fix_phase_seen:
+            self._boot_fix_phase_seen = True
+            self._phases_done += 1
+            self._phase_target = boot_fix
             self._phase_files = 0
         elif current_file_from_line(text) is not None:
             self._phase_files += 1
         else:
             return
         total = max(self._phases_total, self._phases_done)
-        # Stay indeterminate for the whole run; the text carries partition N of M.
         self.progressBar.setMaximum(0)
         self.progressBar.setFormat(
             progress_label(
