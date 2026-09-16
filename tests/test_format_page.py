@@ -296,14 +296,49 @@ def test_empty_candidates_message():
     inv = load_lsblk((FIXTURES / "lsblk_unnamed.json").read_text())
     p = FormatPage(inv)
     assert p.diskList.count() == 0
-    assert p.emptyDiskLabel.text() == (
-        "Plug in a new disk that is not the running system's disk."
-    )
+    assert "Refresh disks" in p.emptyDiskLabel.text()
     assert not p.emptyDiskLabel.isHidden()
+    assert p.refreshButton.text() == "Refresh disks"
     p.psetEdit.setText("bak9")
     p.confirmEdit.setText("sda")
     p._sync_enabled()
     assert not p.formatButton.isEnabled()
+
+
+def test_format_refresh_reloads_inventory_and_stays_on_page():
+    app()
+    empty = load_lsblk((FIXTURES / "lsblk_unnamed.json").read_text())
+    ready = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    w = MainWindow(
+        inventory=empty,
+        last_run=None,
+        reload_inventory=lambda: ready,
+    )
+    w.on_format_clicked()
+    assert w.stack.currentIndex() == PAGE_FORMAT
+    assert w.formatPage.diskList.count() == 0
+    w.formatPage.refreshButton.click()
+    assert w.stack.currentIndex() == PAGE_FORMAT
+    assert w.formatPage.diskList.count() >= 1
+
+
+def test_wizard_format_refresh_can_advance_when_backup_appears():
+    app()
+    from dataclasses import replace
+
+    named = load_lsblk((FIXTURES / "lsblk_named.json").read_text())
+    no_backup = replace(named, backup_sets=[])
+    w = MainWindow(
+        inventory=no_backup,
+        last_run=None,
+        reload_inventory=lambda: named,
+    )
+    w.on_wizard_clicked()
+    w.wizardIntroPage.startButton.click()
+    assert w.stack.currentIndex() == PAGE_FORMAT
+    w.formatPage.refreshButton.click()
+    # Named inventory is ready to back up, so wizard should leave format.
+    assert w.stack.currentIndex() != PAGE_FORMAT
 
 
 def test_named_hides_empty_message():
